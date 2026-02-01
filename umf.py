@@ -325,6 +325,13 @@ def solve_substitution_milp(
     new_mat_penalty: float,
     slack_weight: float,
 ) -> Dict[str, float]:
+    """
+    Default behavior is lexicographic:
+      (1) minimize UMF mismatch (weighted slack)
+      (2) minimize # of new materials
+      (3) minimize recipe deviation (L1 vs baseline)
+    Flags dev_weight/new_mat_penalty/slack_weight are kept for compatibility but are not the primary mechanism.
+    """
     if pywraplp is None:
         die("ortools is required. Install with: python3 -m pip install ortools")
 
@@ -336,7 +343,7 @@ def solve_substitution_milp(
             die(f"Recipe material not found in DB and no alias: '{user_mat}'")
         recipe_db[db_name] = recipe_db.get(db_name, 0.0) + parts
 
-    # Targets from original recipe UMF
+    # Target UMF from original (pre-ban) recipe
     orig_moles = db.oxide_moles_from_recipe(recipe_db)
     orig_umf, _ = db.umf_from_moles(orig_moles, fluxes)
 
@@ -370,23 +377,25 @@ def solve_substitution_milp(
         die("After banning, no allowed materials remain in inventory base.")
 
     mats = sorted(allowed_db)
+
     solver = pywraplp.Solver.CreateSolver("CBC")
     if solver is None:
         die("Failed to create CBC solver (ortools install issue).")
 
+    # Decision vars
     x = {m: solver.NumVar(0.0, solver.infinity(), f"x[{m}]") for m in mats}
     y = {m: solver.IntVar(0, 1, f"y[{m}]") for m in mats}
 
-    # Big-M and ingredient cap
+    # Ingredient cap and on/off coupling
     M = 100.0
     for m in mats:
         solver.Add(x[m] <= M * y[m])
-    solver.Add(sum(y[m] for m in mats) <= max_materials)
+    solver.Add(sum(y[m] for m in mats) <= int(max_materials))
 
     # Total mass 100
     solver.Add(sum(x[m] for m in mats) == 100.0)
 
-    # Baseline recipe (DB names)
+    # Baseline (DB names), including baseline swap if provided
     baseline_db = dict(recipe_db)
     if baseline_swap is not None:
         left_user, right_user = baseline_swap
@@ -408,6 +417,7 @@ def solve_substitution_milp(
     def n_ox(ox: str):
         return sum(a[m].get(ox, 0.0) * x[m] for m in mats)
 
+    # Flux sum for UMF normalization
     F = sum(n_ox(f) for f in fluxes)
     solver.Add(F >= 1e-9)
 
@@ -417,16 +427,17 @@ def solve_substitution_milp(
         splus[t] = solver.NumVar(0.0, solver.infinity(), f"splus[{t}]")
         sminus[t] = solver.NumVar(0.0, solver.infinity(), f"sminus[{t}]")
 
-    # UMF equalities with slack
+    # UMF constraints with slack:
+    # n_target - target*F == s+ - s-
     for t in targets:
         if t == "R2O":
             t_val = float(orig_umf.get("Na2O", 0.0) + orig_umf.get("K2O", 0.0))
             solver.Add((n_ox("Na2O") + n_ox("K2O")) - t_val * F == splus[t] - sminus[t])
         else:
-            t_val = float(orig_umf.get(t, 0.0))  # if absent, target 0
+            t_val = float(orig_umf.get(t, 0.0))
             solver.Add(n_ox(t) - t_val * F == splus[t] - sminus[t])
 
-    # L1 deviation from baseline (only for allowed mats)
+    # Deviation from baseline (L1)
     dplus, dminus = {}, {}
     for m in mats:
         dplus[m] = solver.NumVar(0.0, solver.infinity(), f"dplus[{m}]")
@@ -434,30 +445,65 @@ def solve_substitution_milp(
         b = float(baseline_db.get(m, 0.0))
         solver.Add(x[m] - b == dplus[m] - dminus[m])
 
-    # Objective
-    obj = solver.Objective()
+    # New material count (materials not in baseline core)
+    new_mats = solver.NumVar(0.0, solver.infinity(), "new_mats")
+    solver.Add(new_mats == sum(y[m] for m in mats if m not in core_set))
 
-    # 1) recipe variation dominates
+    # Weighted slack score S (primary objective)
+    # Keep slack_weight in the score as a single multiplier for compatibility.
+    S = solver.NumVar(0.0, solver.infinity(), "S")
+    solver.Add(
+        S == slack_weight * sum(float(slack_weights.get(t, 1.0)) * (splus[t] + sminus[t]) for t in targets)
+    )
+
+    # --------------------------
+    # Stage 1: minimize slack S
+    # --------------------------
+    obj = solver.Objective()
+    obj.SetCoefficient(S, 1.0)
+    obj.SetMinimization()
+    status = solver.Solve()
+    if status != pywraplp.Solver.OPTIMAL:
+        die("MILP infeasible or solver error in stage-1 (slack minimization).")
+
+    S_star = S.solution_value()
+
+    # Constrain to (near) best slack
+    # CBC is floating-point; keep a small tolerance to avoid numeric churn.
+    tol = 1e-7
+    solver.Add(S <= S_star + tol)
+
+    # -------------------------------
+    # Stage 2: minimize new materials
+    # -------------------------------
+    obj = solver.Objective()
+    obj.SetCoefficient(new_mats, 1.0)
+    obj.SetMinimization()
+    status = solver.Solve()
+    if status != pywraplp.Solver.OPTIMAL:
+        die("Solver error in stage-2 (min new materials).")
+
+    new_star = new_mats.solution_value()
+    solver.Add(new_mats <= new_star + 1e-9)
+
+    # ---------------------------------------
+    # Stage 3: minimize deviation from baseline
+    # ---------------------------------------
+    obj = solver.Objective()
+    # dev_weight retained (this is now the correct place to use it)
     for m in mats:
         obj.SetCoefficient(dplus[m], dev_weight)
         obj.SetCoefficient(dminus[m], dev_weight)
-
-    # 2) avoid materials not in baseline core
+    # Optionally keep a tiny preference against new materials beyond the hard constraint:
+    # (not strictly needed, but harmless)
     for m in mats:
         if m not in core_set:
-            obj.SetCoefficient(y[m], new_mat_penalty)
-
-    # 3) slack last
-    for t in targets:
-        w = float(slack_weights.get(t, 1.0)) * slack_weight
-        obj.SetCoefficient(splus[t], w)
-        obj.SetCoefficient(sminus[t], w)
-
+            obj.SetCoefficient(y[m], 1e-6 * new_mat_penalty)
     obj.SetMinimization()
 
     status = solver.Solve()
     if status != pywraplp.Solver.OPTIMAL:
-        die("MILP infeasible or solver error. (Try raising --max-materials or ensure inventory includes base recipe materials.)")
+        die("Solver error in stage-3 (min deviation).")
 
     sol = {m: x[m].solution_value() for m in mats if x[m].solution_value() > 1e-6}
     return sol
