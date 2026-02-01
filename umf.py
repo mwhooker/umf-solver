@@ -21,15 +21,10 @@ Dependencies:
   - ortools (CBC MILP): pip install ortools
 No yaml/pyyaml required.
 
-Typical flow:
-  python umf.py alias set "Whiting - Calcium Carb 325M" "Whiting"
-  python umf.py inventory add --base "Whiting - Calcium Carb 325M"
-  python umf.py inventory add --base "Gerstley Borate Blend"
-  python umf.py inventory add --base "Silica 200M"
-  python umf.py inventory add --base "EPK Kaolin"
-  python umf.py inventory add --base "Mahavir Feldspar"
-
-  python umf.py substitute --recipe recipe.csv --ban Custer --baseline-swap "Custer=Mahavir Feldspar"
+New in this version:
+  - substitute: --show-umf prints TARGET / BASELINE / SOLUTION UMF
+  - substitute: --show-groups prints Seger group sums (RO, R2O, R2O3, RO2) and ratios
+  - umf:        --show-groups prints the same for the single recipe
 """
 
 from __future__ import annotations
@@ -61,8 +56,10 @@ DEFAULT_STATE_DIR = SCRIPT_DIR / ".umf_state"
 DEFAULT_ALIASES_PATH = DEFAULT_STATE_DIR / "aliases.json"
 DEFAULT_INVENTORY_PATH = DEFAULT_STATE_DIR / "inventory.json"
 
+# Flux set used for unity normalization (Seger fluxes)
 FLUXES_DEFAULT = ["Li2O", "Na2O", "K2O", "MgO", "CaO", "SrO", "BaO", "ZnO"]
 
+# Default target set for substitution (tune as you like)
 DEFAULT_TARGETS = ["SiO2", "Al2O3", "B2O3", "CaO", "R2O"]  # R2O = Na2O + K2O
 
 DEFAULT_SLACK_WEIGHTS = {"SiO2": 3.0, "Al2O3": 3.0, "B2O3": 2.0, "CaO": 2.0, "R2O": 2.0}
@@ -232,8 +229,6 @@ class AliasState:
             return u
         if u in self.aliases and db.has_material(self.aliases[u]):
             return self.aliases[u]
-
-        # case/punct-insensitive fallback
         nk = norm_key(u)
         for m in db.all_materials():
             if norm_key(m) == nk:
@@ -255,6 +250,60 @@ class InventoryState:
 
     def save(self, path: Path) -> None:
         save_json(path, {"base": sorted(self.base), "additions": sorted(self.additions)})
+
+
+# ----------------------------
+# Seger groups + reporting
+# ----------------------------
+
+# Classic Seger groupings (you can tweak as desired)
+SEGER_RO   = ["MgO", "CaO", "SrO", "BaO", "ZnO"]       # RO fluxes (divalents)
+SEGER_R2O  = ["Li2O", "Na2O", "K2O"]                   # R2O fluxes (monovalents)
+SEGER_R2O3 = ["Al2O3", "B2O3", "Fe2O3"]                # intermediates/viscosity group (B2O3 is special-case but often here)
+SEGER_RO2  = ["SiO2", "TiO2"]                          # glass formers
+
+def seger_group_sums(umf: Dict[str, float]) -> Dict[str, float]:
+    ro = sum(umf.get(o, 0.0) for o in SEGER_RO)
+    r2o = sum(umf.get(o, 0.0) for o in SEGER_R2O)
+    r2o3 = sum(umf.get(o, 0.0) for o in SEGER_R2O3)
+    ro2 = sum(umf.get(o, 0.0) for o in SEGER_RO2)
+    return {"RO": ro, "R2O": r2o, "R2O3": r2o3, "RO2": ro2}
+
+def print_umf_block(db, recipe_db: Dict[str, float], fluxes: List[str], label: str, show_groups: bool) -> Dict[str, float]:
+    moles = db.oxide_moles_from_recipe(recipe_db)
+    umf, F = db.umf_from_moles(moles, fluxes)
+
+    print(f"\n{label}")
+    print(f"  Flux moles: {F:.6f}")
+    for ox in ["Na2O","K2O","CaO","MgO","B2O3","Al2O3","SiO2","Fe2O3","TiO2"]:
+        if ox in umf and abs(umf[ox]) > 1e-8:
+            print(f"  {ox:6s}: {umf[ox]:.4f}")
+
+    if show_groups:
+        g = seger_group_sums(umf)
+        ro = g["RO"]
+        r2o = g["R2O"]
+        r2o3 = g["R2O3"]
+        ro2 = g["RO2"]
+        flux_total = ro + r2o  # should be ~1.0 by UMF normalization, aside from floating error
+
+        def safe_div(a: float, b: float) -> float:
+            return a / b if abs(b) > 1e-12 else float("nan")
+
+        print("\n  Seger group sums (UMF):")
+        print(f"    RO   : {ro:.4f}")
+        print(f"    R2O  : {r2o:.4f}")
+        print(f"    R2O3 : {r2o3:.4f}")
+        print(f"    RO2  : {ro2:.4f}")
+        print(f"    Flux (RO+R2O): {flux_total:.4f}")
+
+        print("\n  Group ratios:")
+        print(f"    RO/R2O       : {safe_div(ro, r2o):.4f}")
+        print(f"    (RO+R2O)/R2O3 : {safe_div(flux_total, r2o3):.4f}")
+        print(f"    RO2/R2O3      : {safe_div(ro2, r2o3):.4f}")
+        print(f"    RO2/(RO+R2O)  : {safe_div(ro2, flux_total):.4f}")
+
+    return umf
 
 
 # ----------------------------
@@ -544,6 +593,8 @@ def cmd_umf(args):
     alias = AliasState.load(args.aliases)
 
     recipe_user = read_recipe_csv(args.recipe)
+
+    # Resolve recipe to DB names
     recipe_db: Dict[str, float] = {}
     for u, p in recipe_user.items():
         r = alias.resolve(u, db)
@@ -551,29 +602,13 @@ def cmd_umf(args):
             die(f"Recipe material not found: '{u}' (add alias or use exact DB name)")
         recipe_db[r] = recipe_db.get(r, 0.0) + p
 
-    moles = db.oxide_moles_from_recipe(recipe_db)
-    fluxes = parse_list(args.fluxes) if args.fluxes else FLUXES_DEFAULT
-    umf, F = db.umf_from_moles(moles, fluxes)
-
     print("Resolved recipe (DB names):")
     for m in sorted(recipe_db.keys()):
         print(f"  {m}: {recipe_db[m]:.6g}")
-    print(f"\nFlux sum (moles): {F:.6g}\n")
 
-    key = ["Na2O", "K2O", "CaO", "MgO", "ZnO", "B2O3", "Al2O3", "SiO2", "Fe2O3", "TiO2"]
-    printed = set()
-    print("UMF (selected):")
-    for ox in key:
-        if ox in umf:
-            print(f"  {ox}: {umf[ox]:.4f}")
-            printed.add(ox)
-
-    print("\nUMF (all nonzero):")
-    for ox in sorted(umf.keys()):
-        if ox in printed:
-            continue
-        if abs(umf[ox]) > 1e-6:
-            print(f"  {ox}: {umf[ox]:.6f}")
+    fluxes = parse_list(args.fluxes) if args.fluxes else FLUXES_DEFAULT
+    # This prints a compact UMF selection plus groups if requested
+    print_umf_block(db, recipe_db, fluxes, "UMF", show_groups=args.show_groups)
     return 0
 
 def cmd_substitute(args):
@@ -595,6 +630,31 @@ def cmd_substitute(args):
     slack_weights = DEFAULT_SLACK_WEIGHTS.copy()
     slack_weights.update(parse_kv(args.slack_weights))
 
+    fluxes = parse_list(args.fluxes) if args.fluxes else FLUXES_DEFAULT
+    want_umf = bool(args.show_umf or args.show_groups)
+
+    # Resolve recipe to DB names for printing (TARGET) and BASELINE block
+    recipe_db: Dict[str, float] = {}
+    for u, p in recipe_user.items():
+        r = alias.resolve(u, db)
+        if r is None:
+            die(f"Recipe material not found: '{u}' (add alias)")
+        recipe_db[r] = recipe_db.get(r, 0.0) + p
+
+    if want_umf:
+        print_umf_block(db, recipe_db, fluxes, "TARGET UMF (original recipe)", show_groups=args.show_groups)
+
+        baseline_db = dict(recipe_db)
+        if baseline_swap is not None:
+            left_user, right_user = baseline_swap
+            left_db = alias.resolve(left_user, db) or left_user
+            right_db = alias.resolve(right_user, db) or right_user
+            moved = baseline_db.get(left_db, 0.0)
+            baseline_db[left_db] = 0.0
+            baseline_db[right_db] = baseline_db.get(right_db, 0.0) + moved
+
+        print_umf_block(db, baseline_db, fluxes, "BASELINE UMF (after swap)", show_groups=args.show_groups)
+
     sol = solve_substitution_milp(
         db=db,
         alias=alias,
@@ -605,17 +665,21 @@ def cmd_substitute(args):
         max_materials=int(args.max_materials),
         targets=targets,
         slack_weights=slack_weights,
-        fluxes=parse_list(args.fluxes) if args.fluxes else FLUXES_DEFAULT,
+        fluxes=fluxes,
         dev_weight=float(args.dev_weight),
         new_mat_penalty=float(args.new_mat_penalty),
         slack_weight=float(args.slack_weight),
     )
 
-    print("Substitution result (DB names), sum=100:")
+    print("\nSubstitution result (DB names), sum=100:")
     total = sum(sol.values())
     for m in sorted(sol.keys()):
         print(f"  {m}: {sol[m]:.4f}")
     print(f"  TOTAL: {total:.4f}")
+
+    if want_umf:
+        print_umf_block(db, sol, fluxes, "SOLUTION UMF (optimized)", show_groups=args.show_groups)
+
     return 0
 
 
@@ -676,6 +740,8 @@ def build_parser():
     sp = sub.add_parser("umf", help="Compute UMF for a recipe CSV.")
     sp.add_argument("--recipe", type=Path, required=True)
     sp.add_argument("--fluxes", default=",".join(FLUXES_DEFAULT), help="Comma list of flux oxides")
+    sp.add_argument("--show-groups", action="store_true",
+                    help="Print Seger group sums (RO, R2O, R2O3, RO2) and ratios")
     sp.set_defaults(func=cmd_umf)
 
     # substitute
@@ -692,6 +758,10 @@ def build_parser():
     sp.add_argument("--dev-weight", default=str(DEFAULT_DEV_WEIGHT), help="Weight on recipe variation (L1)")
     sp.add_argument("--new-mat-penalty", default=str(DEFAULT_NEW_MAT_PENALTY), help="Penalty for using non-core materials")
     sp.add_argument("--slack-weight", default=str(DEFAULT_SLACK_WEIGHT), help="Global multiplier on slack penalties")
+    sp.add_argument("--show-umf", action="store_true",
+                    help="Print target, baseline, and solution UMF blocks")
+    sp.add_argument("--show-groups", action="store_true",
+                    help="Also print Seger group sums (RO, R2O, R2O3, RO2) and ratios within UMF blocks")
     sp.set_defaults(func=cmd_substitute)
 
     return p
