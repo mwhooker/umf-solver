@@ -62,12 +62,11 @@ FLUXES_DEFAULT = ["Li2O", "Na2O", "K2O", "MgO", "CaO", "SrO", "BaO", "ZnO"]
 # Default target set for substitution (tune as you like)
 DEFAULT_TARGETS = ["SiO2", "Al2O3", "B2O3", "CaO", "R2O"]  # R2O = Na2O + K2O
 
-DEFAULT_SLACK_WEIGHTS = {"SiO2": 3.0, "Al2O3": 3.0, "B2O3": 2.0, "CaO": 2.0, "R2O": 2.0}
+INTERNAL_SLACK_WEIGHTS = {"SiO2": 3.0, "Al2O3": 3.0, "B2O3": 2.0, "CaO": 2.0, "R2O": 2.0}
+
 
 # Objective weights (tuneable)
 DEFAULT_DEV_WEIGHT = 1000.0         # huge: stay close to baseline
-DEFAULT_NEW_MAT_PENALTY = 5000.0     # huge: avoid new materials
-DEFAULT_SLACK_WEIGHT = 1.0           # small: accept slack rather than weird recipe
 
 
 # ----------------------------
@@ -319,11 +318,8 @@ def solve_substitution_milp(
     baseline_swap: Optional[Tuple[str, str]],
     max_materials: int,
     targets: List[str],
-    slack_weights: Dict[str, float],
     fluxes: List[str],
     dev_weight: float,
-    new_mat_penalty: float,
-    slack_weight: float,
 ) -> Dict[str, float]:
     """
     Default behavior is lexicographic:
@@ -450,11 +446,11 @@ def solve_substitution_milp(
     solver.Add(new_mats == sum(y[m] for m in mats if m not in core_set))
 
     # Weighted slack score S (primary objective)
-    # Keep slack_weight in the score as a single multiplier for compatibility.
     S = solver.NumVar(0.0, solver.infinity(), "S")
     solver.Add(
-        S == slack_weight * sum(float(slack_weights.get(t, 1.0)) * (splus[t] + sminus[t]) for t in targets)
+        S == sum(float(INTERNAL_SLACK_WEIGHTS.get(t, 1.0)) * (splus[t] + sminus[t]) for t in targets)
     )
+
 
     # --------------------------
     # Stage 1: minimize slack S
@@ -494,11 +490,6 @@ def solve_substitution_milp(
     for m in mats:
         obj.SetCoefficient(dplus[m], dev_weight)
         obj.SetCoefficient(dminus[m], dev_weight)
-    # Optionally keep a tiny preference against new materials beyond the hard constraint:
-    # (not strictly needed, but harmless)
-    for m in mats:
-        if m not in core_set:
-            obj.SetCoefficient(y[m], 1e-6 * new_mat_penalty)
     obj.SetMinimization()
 
     status = solver.Solve()
@@ -673,8 +664,6 @@ def cmd_substitute(args):
         baseline_swap = (normalize(left), normalize(right))
 
     targets = parse_list(args.targets) if args.targets else DEFAULT_TARGETS
-    slack_weights = DEFAULT_SLACK_WEIGHTS.copy()
-    slack_weights.update(parse_kv(args.slack_weights))
 
     fluxes = parse_list(args.fluxes) if args.fluxes else FLUXES_DEFAULT
     want_umf = bool(args.show_umf or args.show_groups)
@@ -710,11 +699,8 @@ def cmd_substitute(args):
         baseline_swap=baseline_swap,
         max_materials=int(args.max_materials),
         targets=targets,
-        slack_weights=slack_weights,
         fluxes=fluxes,
         dev_weight=float(args.dev_weight),
-        new_mat_penalty=float(args.new_mat_penalty),
-        slack_weight=float(args.slack_weight),
     )
 
     print("\nSubstitution result (DB names), sum=100:")
@@ -797,13 +783,8 @@ def build_parser():
     sp.add_argument("--baseline-swap", default="", help="Baseline swap like 'Custer=Mahavir Feldspar'")
     sp.add_argument("--max-materials", default="6", help="Max number of materials in output recipe")
     sp.add_argument("--targets", default=",".join(DEFAULT_TARGETS), help="UMF targets to match with slack")
-    sp.add_argument("--slack-weights",
-                    default=",".join(f"{k}={v}" for k, v in DEFAULT_SLACK_WEIGHTS.items()),
-                    help="Slack weights, e.g. 'SiO2=3,Al2O3=3,R2O=2'")
     sp.add_argument("--fluxes", default=",".join(FLUXES_DEFAULT), help="Comma list of flux oxides")
     sp.add_argument("--dev-weight", default=str(DEFAULT_DEV_WEIGHT), help="Weight on recipe variation (L1)")
-    sp.add_argument("--new-mat-penalty", default=str(DEFAULT_NEW_MAT_PENALTY), help="Penalty for using non-core materials")
-    sp.add_argument("--slack-weight", default=str(DEFAULT_SLACK_WEIGHT), help="Global multiplier on slack penalties")
     sp.add_argument("--show-umf", action="store_true",
                     help="Print target, baseline, and solution UMF blocks")
     sp.add_argument("--show-groups", action="store_true",
