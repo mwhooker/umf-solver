@@ -120,6 +120,27 @@ def parse_kv(s: str) -> Dict[str, float]:
 def parse_list(s: str) -> List[str]:
     return [normalize(x) for x in s.split(",") if x.strip()]
 
+def resolve_oxide_list(items: List[str], db: "OxideDB", allow_r2o: bool) -> List[str]:
+    """Resolve oxide names case-insensitively against DB oxides (and optional R2O)."""
+    by_lower = {ox.lower(): ox for ox in db.oxides}
+    if allow_r2o:
+        by_lower["r2o"] = "R2O"
+    resolved: List[str] = []
+    unknown: List[str] = []
+    for raw in items:
+        key = raw.strip().lower()
+        if not key:
+            continue
+        ox = by_lower.get(key)
+        if ox is None:
+            unknown.append(raw)
+        else:
+            resolved.append(ox)
+    if unknown:
+        valid = sorted(set(by_lower.values()))
+        die("Unknown oxide(s): " + ", ".join(unknown) + "\nValid: " + ", ".join(valid))
+    return resolved
+
 def _parse_recipe_lines(lines: List[str]) -> Dict[str, float]:
     recipe: Dict[str, float] = {}
     r = csv.DictReader(lines)
@@ -703,7 +724,8 @@ def cmd_umf(args):
     for m in sorted(recipe_db.keys()):
         print(f"  {m}: {recipe_db[m]:.6g}")
 
-    fluxes = parse_list(args.fluxes) if args.fluxes else FLUXES_DEFAULT
+    flux_raw = parse_list(args.fluxes) if args.fluxes else FLUXES_DEFAULT
+    fluxes = resolve_oxide_list(flux_raw, db, allow_r2o=False)
     # This prints a compact UMF selection plus groups if requested
     print_umf_block(db, recipe_db, fluxes, "UMF", show_groups=args.show_groups)
     return 0
@@ -723,9 +745,11 @@ def cmd_substitute(args):
         left, right = args.baseline_swap.split("=", 1)
         baseline_swap = (normalize(left), normalize(right))
 
-    targets = parse_list(args.targets) if args.targets else DEFAULT_TARGETS
+    target_raw = parse_list(args.targets) if args.targets else DEFAULT_TARGETS
+    targets = resolve_oxide_list(target_raw, db, allow_r2o=True)
 
-    fluxes = parse_list(args.fluxes) if args.fluxes else FLUXES_DEFAULT
+    flux_raw = parse_list(args.fluxes) if args.fluxes else FLUXES_DEFAULT
+    fluxes = resolve_oxide_list(flux_raw, db, allow_r2o=False)
     want_umf = bool(args.show_umf or args.show_groups)
 
     fixed_db, variable_db, _fixed_total, _var_total = split_recipe_fixed_variable(
