@@ -120,17 +120,50 @@ def parse_kv(s: str) -> Dict[str, float]:
 def parse_list(s: str) -> List[str]:
     return [normalize(x) for x in s.split(",") if x.strip()]
 
-def read_recipe_csv(path: Path) -> Dict[str, float]:
+def _parse_recipe_lines(lines: List[str]) -> Dict[str, float]:
     recipe: Dict[str, float] = {}
-    with path.open("r", encoding="utf-8") as f:
-        r = csv.DictReader(f)
-        if not r.fieldnames or "material" not in r.fieldnames or "parts" not in r.fieldnames:
-            die("Recipe CSV must have headers: material,parts")
-        for row in r:
-            m = normalize(row["material"])
-            p = float(row["parts"])
-            recipe[m] = recipe.get(m, 0.0) + p
+    r = csv.DictReader(lines)
+    if not r.fieldnames or "material" not in r.fieldnames or "parts" not in r.fieldnames:
+        die("Recipe CSV must have headers: material,parts")
+    for row in r:
+        if row is None:
+            continue
+        m_raw = row.get("material")
+        p_raw = row.get("parts")
+        if m_raw is None or p_raw is None:
+            continue
+        m = normalize(m_raw)
+        if not m:
+            continue
+        p = float(p_raw)
+        recipe[m] = recipe.get(m, 0.0) + p
     return recipe
+
+
+def read_recipe_csv(path: Path) -> Tuple[Dict[str, float], Dict[str, float]]:
+    """
+    Reads a recipe CSV and returns (base_parts, colorant_parts).
+    Convention: any rows after a blank line are treated as colorants.
+    """
+    text = path.read_text(encoding="utf-8")
+    lines = text.splitlines()
+    if not lines:
+        die("Recipe CSV is empty.")
+    header = lines[0]
+    base_lines = [header]
+    color_lines = [header]
+    in_color = False
+    for line in lines[1:]:
+        if line.strip() == "":
+            in_color = True
+            continue
+        if in_color:
+            color_lines.append(line)
+        else:
+            base_lines.append(line)
+    base_recipe = _parse_recipe_lines(base_lines)
+    color_recipe = _parse_recipe_lines(color_lines) if len(color_lines) > 1 else {}
+    return base_recipe, color_recipe
 
 
 # ----------------------------
@@ -238,17 +271,15 @@ class AliasState:
 @dataclass
 class InventoryState:
     base: Set[str] = field(default_factory=set)       # user-facing names
-    additions: Set[str] = field(default_factory=set)  # user-facing names
 
     @staticmethod
     def load(path: Path) -> "InventoryState":
         data = load_json(path, default_obj={})
         base = set(normalize(x) for x in (data.get("base", []) if isinstance(data, dict) else []))
-        additions = set(normalize(x) for x in (data.get("additions", []) if isinstance(data, dict) else []))
-        return InventoryState(base=base, additions=additions)
+        return InventoryState(base=base)
 
     def save(self, path: Path) -> None:
-        save_json(path, {"base": sorted(self.base), "additions": sorted(self.additions)})
+        save_json(path, {"base": sorted(self.base)})
 
 
 # ----------------------------
@@ -308,34 +339,29 @@ def print_umf_block(db, recipe_db: Dict[str, float], fluxes: List[str], label: s
 def split_recipe_fixed_variable(
     db: OxideDB,
     alias: AliasState,
-    inv: InventoryState,
-    recipe_user: Dict[str, float],
+    base_user: Dict[str, float],
+    colorant_user: Dict[str, float],
 ) -> Tuple[Dict[str, float], Dict[str, float], float, float]:
     """
     Returns (fixed_db, variable_db, fixed_total_parts, variable_total_parts)
 
-    fixed_db:    DB-name -> parts (materials listed in inventory.additions)
-    variable_db: DB-name -> parts (everything else)
+    fixed_db:    DB-name -> parts (materials listed as colorants in recipe)
+    variable_db: DB-name -> parts (base materials in recipe)
     """
-    additions_db: Set[str] = set()
-    for u in inv.additions:
-        r = alias.resolve(u, db)
-        if r is None:
-            # Allow unresolved additions in inventory, but if they appear in recipe, we'll error below.
-            continue
-        additions_db.add(r)
-
     fixed_db: Dict[str, float] = {}
     variable_db: Dict[str, float] = {}
 
-    for u, p in recipe_user.items():
+    for u, p in colorant_user.items():
         r = alias.resolve(u, db)
         if r is None:
             die(f"Recipe material not found: '{u}' (add alias or use exact DB name)")
-        if r in additions_db:
-            fixed_db[r] = fixed_db.get(r, 0.0) + p
-        else:
-            variable_db[r] = variable_db.get(r, 0.0) + p
+        fixed_db[r] = fixed_db.get(r, 0.0) + p
+
+    for u, p in base_user.items():
+        r = alias.resolve(u, db)
+        if r is None:
+            die(f"Recipe material not found: '{u}' (add alias or use exact DB name)")
+        variable_db[r] = variable_db.get(r, 0.0) + p
 
     fixed_total = sum(fixed_db.values())
     var_total = sum(variable_db.values())
@@ -393,7 +419,7 @@ def solve_substitution_milp(
     if unresolved:
         die("Inventory base has unresolved materials (add aliases):\n  - " + "\n  - ".join(unresolved))
     if not allowed_db:
-        die("Inventory base is empty. Add materials via: inventory add --base 'Name'")
+        die("Inventory base is empty. Add materials via: inventory add 'Name'")
 
     # Ban list resolved
     banned_db: Set[str] = set()
@@ -426,10 +452,10 @@ def solve_substitution_milp(
         solver.Add(x[m] <= M * y[m])
     solver.Add(sum(y[m] for m in mats) <= int(max_materials))
 
-    # Total mass = 100 - fixed additions
+    # Total mass = 100 - fixed colorants
     variable_mass_target = 100.0 - fixed_mass
     if variable_mass_target <= 0.0:
-        die(f"Fixed additions sum to {fixed_mass:.6g}, leaving no mass for base materials.")
+        die(f"Fixed colorants sum to {fixed_mass:.6g}, leaving no mass for base materials.")
     solver.Add(sum(x[m] for m in mats) == variable_mass_target)
 
     # Baseline (variable-only, DB names), including baseline swap if provided
@@ -604,14 +630,8 @@ def cmd_inventory_add(args):
     if resolved is None and not args.allow_unresolved:
         die(f"Material '{name}' doesn't resolve to DB. Add an alias first or use --allow-unresolved.")
 
-    if args.base:
-        inv.base.add(name)
-        inv.additions.discard(name)
-        kind = "base"
-    else:
-        inv.additions.add(name)
-        inv.base.discard(name)
-        kind = "addition"
+    inv.base.add(name)
+    kind = "base"
 
     inv.save(args.inventory)
     print(f"Added ({kind}): {name}")
@@ -625,9 +645,6 @@ def cmd_inventory_remove(args):
     if name in inv.base:
         inv.base.remove(name)
         existed = True
-    if name in inv.additions:
-        inv.additions.remove(name)
-        existed = True
     if not existed:
         print(f"(not in inventory) {name}")
         return 0
@@ -639,9 +656,6 @@ def cmd_inventory_list(args):
     inv = InventoryState.load(args.inventory)
     print("Base:")
     for m in sorted(inv.base):
-        print(f"  - {m}")
-    print("\nAdditions:")
-    for m in sorted(inv.additions):
         print(f"  - {m}")
     return 0
 
@@ -666,14 +680,16 @@ def cmd_inventory_report(args):
         print("")
 
     report("Base materials:", inv.base)
-    report("Additions:", inv.additions)
     return 0
 
 def cmd_umf(args):
     db = OxideDB.load(args.db)
     alias = AliasState.load(args.aliases)
 
-    recipe_user = read_recipe_csv(args.recipe)
+    base_user, colorant_user = read_recipe_csv(args.recipe)
+    recipe_user = dict(base_user)
+    for k, v in colorant_user.items():
+        recipe_user[k] = recipe_user.get(k, 0.0) + v
 
     # Resolve recipe to DB names
     recipe_db: Dict[str, float] = {}
@@ -697,7 +713,7 @@ def cmd_substitute(args):
     alias = AliasState.load(args.aliases)
     inv = InventoryState.load(args.inventory)
 
-    recipe_user = read_recipe_csv(args.recipe)
+    base_user, colorant_user = read_recipe_csv(args.recipe)
 
     ban = parse_list(args.ban) if args.ban else []
     baseline_swap = None
@@ -715,8 +731,8 @@ def cmd_substitute(args):
     fixed_db, variable_db, _fixed_total, _var_total = split_recipe_fixed_variable(
         db=db,
         alias=alias,
-        inv=inv,
-        recipe_user=recipe_user,
+        base_user=base_user,
+        colorant_user=colorant_user,
     )
 
     # Full recipe for TARGET UMF (fixed + variable)
@@ -727,7 +743,7 @@ def cmd_substitute(args):
     if want_umf:
         print_umf_block(db, recipe_db_full, fluxes, "TARGET UMF (original recipe)", show_groups=args.show_groups)
 
-        # Baseline is variable-only with swap applied, then combined with fixed additions
+        # Baseline is variable-only with swap applied, then combined with fixed colorants
         baseline_var = dict(variable_db)
         if baseline_swap is not None:
             left_user, right_user = baseline_swap
@@ -806,9 +822,8 @@ def build_parser():
     sp = sub.add_parser("inventory", help="Manage persistent inventory.")
     sub2 = sp.add_subparsers(dest="inv_cmd", required=True)
 
-    sp2 = sub2.add_parser("add", help="Add a material to inventory.")
+    sp2 = sub2.add_parser("add", help="Add a material to inventory base.")
     sp2.add_argument("material")
-    sp2.add_argument("--base", action="store_true", help="Mark as base material (solver may use).")
     sp2.add_argument("--allow-unresolved", action="store_true", help="Allow adding even if no DB/alias match yet.")
     sp2.set_defaults(func=cmd_inventory_add)
 
