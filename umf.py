@@ -305,6 +305,43 @@ def print_umf_block(db, recipe_db: Dict[str, float], fluxes: List[str], label: s
     return umf
 
 
+def split_recipe_fixed_variable(
+    db: OxideDB,
+    alias: AliasState,
+    inv: InventoryState,
+    recipe_user: Dict[str, float],
+) -> Tuple[Dict[str, float], Dict[str, float], float, float]:
+    """
+    Returns (fixed_db, variable_db, fixed_total_parts, variable_total_parts)
+
+    fixed_db:    DB-name -> parts (materials listed in inventory.additions)
+    variable_db: DB-name -> parts (everything else)
+    """
+    additions_db: Set[str] = set()
+    for u in inv.additions:
+        r = alias.resolve(u, db)
+        if r is None:
+            # Allow unresolved additions in inventory, but if they appear in recipe, we'll error below.
+            continue
+        additions_db.add(r)
+
+    fixed_db: Dict[str, float] = {}
+    variable_db: Dict[str, float] = {}
+
+    for u, p in recipe_user.items():
+        r = alias.resolve(u, db)
+        if r is None:
+            die(f"Recipe material not found: '{u}' (add alias or use exact DB name)")
+        if r in additions_db:
+            fixed_db[r] = fixed_db.get(r, 0.0) + p
+        else:
+            variable_db[r] = variable_db.get(r, 0.0) + p
+
+    fixed_total = sum(fixed_db.values())
+    var_total = sum(variable_db.values())
+    return fixed_db, variable_db, fixed_total, var_total
+
+
 # ----------------------------
 # MILP solver
 # ----------------------------
@@ -313,7 +350,8 @@ def solve_substitution_milp(
     db: OxideDB,
     alias: AliasState,
     inv: InventoryState,
-    recipe_user: Dict[str, float],
+    fixed_db: Dict[str, float],
+    variable_db: Dict[str, float],
     ban_user_names: List[str],
     baseline_swap: Optional[Tuple[str, str]],
     max_materials: int,
@@ -331,17 +369,17 @@ def solve_substitution_milp(
     if pywraplp is None:
         die("ortools is required. Install with: python3 -m pip install ortools")
 
-    # Resolve recipe to DB names
-    recipe_db: Dict[str, float] = {}
-    for user_mat, parts in recipe_user.items():
-        db_name = alias.resolve(user_mat, db)
-        if db_name is None:
-            die(f"Recipe material not found in DB and no alias: '{user_mat}'")
-        recipe_db[db_name] = recipe_db.get(db_name, 0.0) + parts
+    # Target UMF from original (full) recipe: fixed + variable
+    recipe_full = dict(fixed_db)
+    for k, v in variable_db.items():
+        recipe_full[k] = recipe_full.get(k, 0.0) + v
 
-    # Target UMF from original (pre-ban) recipe
-    orig_moles = db.oxide_moles_from_recipe(recipe_db)
+    orig_moles = db.oxide_moles_from_recipe(recipe_full)
     orig_umf, _ = db.umf_from_moles(orig_moles, fluxes)
+
+    # Fixed oxide moles and mass
+    fixed_moles = db.oxide_moles_from_recipe(fixed_db)
+    fixed_mass = sum(fixed_db.values())
 
     # Allowed materials = inventory base (resolved to DB names)
     allowed_db: Set[str] = set()
@@ -388,11 +426,14 @@ def solve_substitution_milp(
         solver.Add(x[m] <= M * y[m])
     solver.Add(sum(y[m] for m in mats) <= int(max_materials))
 
-    # Total mass 100
-    solver.Add(sum(x[m] for m in mats) == 100.0)
+    # Total mass = 100 - fixed additions
+    variable_mass_target = 100.0 - fixed_mass
+    if variable_mass_target <= 0.0:
+        die(f"Fixed additions sum to {fixed_mass:.6g}, leaving no mass for base materials.")
+    solver.Add(sum(x[m] for m in mats) == variable_mass_target)
 
-    # Baseline (DB names), including baseline swap if provided
-    baseline_db = dict(recipe_db)
+    # Baseline (variable-only, DB names), including baseline swap if provided
+    baseline_db = dict(variable_db)
     if baseline_swap is not None:
         left_user, right_user = baseline_swap
         left = alias.resolve(left_user, db) or left_user
@@ -411,7 +452,7 @@ def solve_substitution_milp(
     a = {m: db.coeffs_moles_per_gram(m) for m in mats}
 
     def n_ox(ox: str):
-        return sum(a[m].get(ox, 0.0) * x[m] for m in mats)
+        return float(fixed_moles.get(ox, 0.0)) + sum(a[m].get(ox, 0.0) * x[m] for m in mats)
 
     # Flux sum for UMF normalization
     F = sum(n_ox(f) for f in fluxes)
@@ -496,8 +537,11 @@ def solve_substitution_milp(
     if status != pywraplp.Solver.OPTIMAL:
         die("Solver error in stage-3 (min deviation).")
 
-    sol = {m: x[m].solution_value() for m in mats if x[m].solution_value() > 1e-6}
-    return sol
+    sol_var = {m: x[m].solution_value() for m in mats if x[m].solution_value() > 1e-6}
+    sol_full = dict(fixed_db)
+    for k, v in sol_var.items():
+        sol_full[k] = sol_full.get(k, 0.0) + v
+    return sol_full
 
 
 # ----------------------------
@@ -668,33 +712,43 @@ def cmd_substitute(args):
     fluxes = parse_list(args.fluxes) if args.fluxes else FLUXES_DEFAULT
     want_umf = bool(args.show_umf or args.show_groups)
 
-    # Resolve recipe to DB names for printing (TARGET) and BASELINE block
-    recipe_db: Dict[str, float] = {}
-    for u, p in recipe_user.items():
-        r = alias.resolve(u, db)
-        if r is None:
-            die(f"Recipe material not found: '{u}' (add alias)")
-        recipe_db[r] = recipe_db.get(r, 0.0) + p
+    fixed_db, variable_db, _fixed_total, _var_total = split_recipe_fixed_variable(
+        db=db,
+        alias=alias,
+        inv=inv,
+        recipe_user=recipe_user,
+    )
+
+    # Full recipe for TARGET UMF (fixed + variable)
+    recipe_db_full = dict(fixed_db)
+    for k, v in variable_db.items():
+        recipe_db_full[k] = recipe_db_full.get(k, 0.0) + v
 
     if want_umf:
-        print_umf_block(db, recipe_db, fluxes, "TARGET UMF (original recipe)", show_groups=args.show_groups)
+        print_umf_block(db, recipe_db_full, fluxes, "TARGET UMF (original recipe)", show_groups=args.show_groups)
 
-        baseline_db = dict(recipe_db)
+        # Baseline is variable-only with swap applied, then combined with fixed additions
+        baseline_var = dict(variable_db)
         if baseline_swap is not None:
             left_user, right_user = baseline_swap
             left_db = alias.resolve(left_user, db) or left_user
             right_db = alias.resolve(right_user, db) or right_user
-            moved = baseline_db.get(left_db, 0.0)
-            baseline_db[left_db] = 0.0
-            baseline_db[right_db] = baseline_db.get(right_db, 0.0) + moved
+            moved = baseline_var.get(left_db, 0.0)
+            baseline_var[left_db] = 0.0
+            baseline_var[right_db] = baseline_var.get(right_db, 0.0) + moved
 
-        print_umf_block(db, baseline_db, fluxes, "BASELINE UMF (after swap)", show_groups=args.show_groups)
+        baseline_full = dict(fixed_db)
+        for k, v in baseline_var.items():
+            baseline_full[k] = baseline_full.get(k, 0.0) + v
+
+        print_umf_block(db, baseline_full, fluxes, "BASELINE UMF (after swap)", show_groups=args.show_groups)
 
     sol = solve_substitution_milp(
         db=db,
         alias=alias,
         inv=inv,
-        recipe_user=recipe_user,
+        fixed_db=fixed_db,
+        variable_db=variable_db,
         ban_user_names=ban,
         baseline_swap=baseline_swap,
         max_materials=int(args.max_materials),
@@ -814,4 +868,3 @@ def main():
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
