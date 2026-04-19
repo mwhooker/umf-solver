@@ -4,6 +4,7 @@ import re
 import urllib.error
 import urllib.parse
 import urllib.request
+import csv
 from html import unescape
 from pathlib import Path
 from typing import List, Optional, Tuple
@@ -50,12 +51,72 @@ def _provider_for_source(label: str) -> str:
     return "generic"
 
 
+def _parse_legacy_recipe_csv(text: str, source: str) -> Optional[SourceRecipe]:
+    lines = text.splitlines()
+    if not lines:
+        return None
+
+    reader = csv.DictReader(lines)
+    if not reader.fieldnames:
+        return None
+    fieldnames = {normalize(name).lower() for name in reader.fieldnames if name is not None}
+    if "material" not in fieldnames or "parts" not in fieldnames:
+        return None
+
+    header = lines[0]
+    base_lines = [header]
+    addition_lines = [header]
+    in_additions = False
+    for line in lines[1:]:
+        if not line.strip():
+            in_additions = True
+            continue
+        if in_additions:
+            addition_lines.append(line)
+        else:
+            base_lines.append(line)
+
+    source_lines: List[SourceRecipeLine] = []
+    for role, role_lines in (("base", base_lines), ("addition", addition_lines)):
+        role_reader = csv.DictReader(role_lines)
+        for row in role_reader:
+            if row is None:
+                continue
+            material = normalize(row.get("material"))
+            parts = normalize(row.get("parts"))
+            if not material or not parts:
+                continue
+            if material.lower() == "material" or parts.lower() == "parts":
+                continue
+            source_lines.append(
+                SourceRecipeLine(
+                    original_name=material,
+                    amount=float(parts),
+                    role=role,
+                    provider="generic",
+                    order=len(source_lines),
+                )
+            )
+
+    if not source_lines:
+        return None
+
+    return SourceRecipe(
+        name=Path(source).stem,
+        provider="generic",
+        source=source,
+        lines=source_lines,
+    )
+
+
 def _parse_name(text: str) -> Optional[str]:
     for raw_line in text.splitlines():
         line = raw_line.strip()
         if not line:
             continue
         if re.match(r"^[+-]?\d+(?:\.\d+)?\s*(?:%|g|grams?)?\s+\S", line, flags=re.IGNORECASE):
+            continue
+        if re.match(r"^.+?\s+[+-]?\d+(?:\.\d+)?\s*(?:%|g|grams?)?$", line, flags=re.IGNORECASE):
             continue
         if line.startswith("# "):
             return normalize(line[2:])
@@ -157,6 +218,10 @@ def import_recipe(source: str) -> SourceRecipe:
     if digitalfire is not None:
         return digitalfire
 
+    legacy_csv = _parse_legacy_recipe_csv(text, label)
+    if legacy_csv is not None:
+        return legacy_csv
+
     if "doesn't work properly without JavaScript enabled" in text and "glazy" in label.lower():
         die(
             "Direct Glazy recipe URLs are JavaScript-driven. Export the recipe from Glazy "
@@ -170,7 +235,7 @@ def import_recipe(source: str) -> SourceRecipe:
         die(f"Could not find recipe ingredients in {source}")
 
     return SourceRecipe(
-        name=_parse_name(plain_text),
+        name=_parse_name(plain_text) or Path(label).stem,
         provider=provider,
         source=label,
         lines=lines,

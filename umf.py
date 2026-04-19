@@ -157,6 +157,13 @@ def print_source_recipe(recipe: SourceRecipe) -> None:
         print(f"  [{line.role}] {line.original_name}: {line.amount:.6g}")
 
 
+def load_source_recipe(source: Path | str) -> SourceRecipe:
+    path = Path(source)
+    if path.suffix.lower() == ".json":
+        return SourceRecipe.load(path)
+    return import_recipe(str(path))
+
+
 def cmd_import_recipe(args):
     db, catalog, inventory, mappings = load_context(args)
     resolver = IngredientResolver(db=db, catalog=catalog, inventory=inventory, mappings=mappings)
@@ -333,8 +340,6 @@ def solve_source_recipe_to_studio(
         if match.status == "exact_studio_material":
             material = match.matched_material or ""
             target_base_materials[material] = target_base_materials.get(material, 0.0) + line.amount
-            fixed_base_materials[material] = fixed_base_materials.get(material, 0.0) + line.amount
-            fixed_base_reasons[material] = match.status
             continue
 
         if match.status in {"exact_material", "material_synonym", "mapped_material", "concept_material"} and match.matched_material is not None:
@@ -342,8 +347,7 @@ def solve_source_recipe_to_studio(
             target_base_materials[material] = target_base_materials.get(material, 0.0) + line.amount
             studio_item = choose_unique_studio_material(inventory, material)
             if studio_item is not None:
-                fixed_base_materials[material] = fixed_base_materials.get(material, 0.0) + line.amount
-                fixed_base_reasons[material] = match.status
+                fixed_base_reasons[material] = fixed_base_reasons.get(material, match.status)
             continue
 
         unresolved.append(f"base '{line.original_name}' requires confirmation before resolution: {match.status}")
@@ -404,7 +408,7 @@ def print_studio_recipe(studio_recipe: StudioRecipe, heading: str) -> None:
 
 def cmd_recipe_render(args):
     db, catalog, inventory, mappings = load_context(args)
-    recipe = SourceRecipe.load(args.source_recipe)
+    recipe = load_source_recipe(args.source_recipe)
     studio_recipe = render_source_recipe_to_studio(
         db=db,
         catalog=catalog,
@@ -418,7 +422,7 @@ def cmd_recipe_render(args):
 
 def cmd_recipe_solve(args):
     db, catalog, inventory, mappings = load_context(args)
-    recipe = SourceRecipe.load(args.source_recipe)
+    recipe = load_source_recipe(args.source_recipe)
     studio_recipe = solve_source_recipe_to_studio(
         db=db,
         catalog=catalog,

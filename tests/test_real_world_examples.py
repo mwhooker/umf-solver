@@ -196,6 +196,42 @@ class RealWorldExampleTests(unittest.TestCase):
         self.assertTrue(all(line.material != "Iron Oxide, Red" for line in base_lines))
         self.assertTrue(any(line.derivation_reason == "umf_reformulation" for line in base_lines))
 
+    def test_solve_rebalances_full_base_not_just_substituted_line(self) -> None:
+        source_recipe = SourceRecipe(
+            name="MD Shino style",
+            provider="generic",
+            source="test",
+            lines=[
+                SourceRecipeLine("Soda Ash", 17.27, "base", "generic", 0),
+                SourceRecipeLine("Kona F-4 Feldspar", 9.82, "base", "generic", 1),
+                SourceRecipeLine("Nepheline Syenite", 40.91, "base", "generic", 2),
+                SourceRecipeLine("Edgar Plastic Kaolin", 18.18, "base", "generic", 3),
+                SourceRecipeLine("OM4", 13.82, "base", "generic", 4),
+                SourceRecipeLine("Red Art", 6.0, "addition", "generic", 5),
+            ],
+        )
+        inventory = StudioInventory()
+        inventory.add("Soda Ash", "Soda Ash")
+        inventory.add("Minspar", "Minspar")
+        inventory.add("Nepheline Syenite", "Neph Sy")
+        inventory.add("EPK", "EPK")
+        inventory.add("OM4", "OM4")
+        inventory.add("Red Art", "Red Art")
+
+        studio_recipe = solve_source_recipe_to_studio(
+            db=self.db,
+            catalog=self.catalog,
+            inventory=inventory,
+            mappings=MaterialMappings(),
+            recipe=source_recipe,
+            max_materials=6,
+        )
+
+        base_amounts = {line.material: line.amount for line in studio_recipe.lines if line.role == "base"}
+        self.assertNotAlmostEqual(base_amounts["Soda Ash"], 17.27, places=2)
+        self.assertNotAlmostEqual(base_amounts["Minspar"], 9.82, places=2)
+        self.assertAlmostEqual(sum(base_amounts.values()), 100.0, places=6)
+
     def test_solver_preserves_base_mass(self) -> None:
         solved = solve_base_reformulation(
             db=self.db,

@@ -1,6 +1,6 @@
 # umf-solver
 
-`umf-solver` imports glaze recipes from outside sources, preserves them as source recipes, and resolves them into studio recipes using your local inventory plus UMF-driven reformulation when needed.
+`umf-solver` imports glaze recipes from outside sources, preserves them as source recipes, and turns them into studio recipes using your local inventory plus UMF-driven reformulation when needed.
 
 The project uses `uv` for environment management.
 
@@ -69,19 +69,32 @@ It prints a separate resolution analysis, but it does not mutate inventory or ma
 
 Note: direct `glazy.org` recipe pages are JavaScript-driven, so the supported Glazy path is still importing saved/exported recipe text.
 
-## Resolving a source recipe into a studio recipe
+## Rendering and solving recipes
 
-Resolve a saved source recipe into a studio recipe using exact matches, confirmed mappings, explicit direct substitution rules, and UMF-driven reformulation for unresolved base materials.
+Recipe commands accept:
+
+- source recipe JSON saved by `import-recipe`
+- plain-text recipe files like `recipes/md-shino.txt`
+- legacy recipe CSV files using `material,parts`
+
+`render` shows a 1:1 studio recipe using exact matches, material synonyms, confirmed mappings, and explicit direct substitutions:
 
 ```bash
-uv run umf recipe resolve recipes/g1214m.source.json
+uv run umf recipe render recipes/md-shino.txt
+```
+
+`solve` uses your studio inventory as the allowed base materials and UMF-rebalances the whole base recipe:
+
+```bash
+uv run umf recipe solve recipes/md-shino.txt
 ```
 
 Important behavior:
 
 - additions are preserved on top and are not routinely substituted
-- generic concepts like `Potash Feldspar` require explicit confirmation before resolution
-- same-concept materials do not auto-substitute without an explicit rule
+- `render` is strict 1:1 substitution
+- `solve` rebalances the full base recipe instead of only swapping one line
+- generic concepts like `Potash Feldspar` still require explicit confirmation before resolution
 
 ## Tests
 

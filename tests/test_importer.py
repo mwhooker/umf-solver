@@ -42,6 +42,26 @@ Added
 1 Red Iron Oxide
 """
 
+UNTITLED_TEXT_FIXTURE = """Soda Ash\t17.27
+Kona F-4 Feldspar\t9.82
+Nepheline Syenite\t40.91
+Edgar Plastic Kaolin\t18.18
+Kentucky Ball Clay (OM 4)\t13.82
+
+additions
+Cedar Heights Redart 6%
+"""
+
+LEGACY_CSV_FIXTURE = """material,parts
+Soda Ash,17.27
+Kona F-4 Feldspar,9.82
+Nepheline Syenite,40.91
+Edgar Plastic Kaolin,18.18
+Kentucky Ball Clay (OM 4),13.82
+
+Cedar Heights Redart,6
+"""
+
 
 class ImporterTests(unittest.TestCase):
     def test_import_digitalfire_preserves_source_lines(self) -> None:
@@ -86,6 +106,25 @@ class ImporterTests(unittest.TestCase):
         self.assertEqual(loaded.provider, recipe.provider)
         self.assertEqual([(line.original_name, line.role) for line in loaded.lines],
                          [(line.original_name, line.role) for line in recipe.lines])
+
+    def test_import_legacy_recipe_csv_preserves_additions(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "md-shino.csv"
+            path.write_text(LEGACY_CSV_FIXTURE, encoding="utf-8")
+            recipe = import_recipe(str(path))
+
+        self.assertEqual(recipe.name, "md-shino")
+        self.assertEqual([line.role for line in recipe.lines], ["base", "base", "base", "base", "base", "addition"])
+        self.assertEqual(recipe.lines[-1].original_name, "Cedar Heights Redart")
+        self.assertEqual(recipe.lines[-1].amount, 6.0)
+
+    def test_import_plain_text_without_title_uses_file_stem(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "md-shino.txt"
+            path.write_text(UNTITLED_TEXT_FIXTURE, encoding="utf-8")
+            recipe = import_recipe(str(path))
+
+        self.assertEqual(recipe.name, "md-shino")
 
     def test_manual_redart_fixture_preserves_base_and_addition_structure(self) -> None:
         recipe = SourceRecipe.load(ROOT / "recipes" / "redart_test.source.json")
