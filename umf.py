@@ -30,20 +30,16 @@ New in this version:
 from __future__ import annotations
 
 import argparse
-import csv
-import json
-import re
-import sys
-from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Tuple, Optional, Set
+from typing import Dict, Set, Tuple
 
-import pandas as pd
-
-try:
-    from ortools.linear_solver import pywraplp
-except Exception:
-    pywraplp = None
+from constants import DEFAULT_DEV_WEIGHT, DEFAULT_TARGETS, FLUXES_DEFAULT
+from db import OxideDB
+from recipe import read_recipe_csv
+from reporting import print_umf_block
+from solver import solve_substitution_milp, split_recipe_fixed_variable
+from state import AliasState, InventoryState
+from utils import die, normalize, norm_key, parse_list, resolve_oxide_list
 
 
 # ----------------------------
@@ -55,540 +51,6 @@ DEFAULT_DB_PATH = SCRIPT_DIR / "data.csv"
 DEFAULT_STATE_DIR = SCRIPT_DIR / ".umf_state"
 DEFAULT_ALIASES_PATH = DEFAULT_STATE_DIR / "aliases.json"
 DEFAULT_INVENTORY_PATH = DEFAULT_STATE_DIR / "inventory.json"
-
-# Flux set used for unity normalization (Seger fluxes)
-FLUXES_DEFAULT = ["Li2O", "Na2O", "K2O", "MgO", "CaO", "SrO", "BaO", "ZnO"]
-
-# Default target set for substitution (tune as you like)
-DEFAULT_TARGETS = ["SiO2", "Al2O3", "B2O3", "CaO", "R2O"]  # R2O = Na2O + K2O
-
-INTERNAL_SLACK_WEIGHTS = {"SiO2": 3.0, "Al2O3": 3.0, "B2O3": 2.0, "CaO": 2.0, "R2O": 2.0}
-
-
-# Objective weights (tuneable)
-DEFAULT_DEV_WEIGHT = 1000.0         # huge: stay close to baseline
-
-
-# ----------------------------
-# Utilities
-# ----------------------------
-
-def die(msg: str, code: int = 2) -> None:
-    print(f"ERROR: {msg}", file=sys.stderr)
-    sys.exit(code)
-
-def normalize(s: str) -> str:
-    s = s.strip()
-    s = re.sub(r"\s+", " ", s)
-    return s
-
-def norm_key(s: str) -> str:
-    """Aggressive normalization for matching keys."""
-    s = s.strip().lower()
-    s = re.sub(r"[^\w\s]", " ", s)
-    s = re.sub(r"\s+", " ", s).strip()
-    return s
-
-def ensure_parent(path: Path) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-
-def load_json(path: Path, default_obj) -> dict:
-    if path.exists():
-        with path.open("r", encoding="utf-8") as f:
-            return json.load(f)
-    return default_obj
-
-def save_json(path: Path, obj: dict) -> None:
-    ensure_parent(path)
-    with path.open("w", encoding="utf-8") as f:
-        json.dump(obj, f, indent=2, sort_keys=False)
-
-def parse_kv(s: str) -> Dict[str, float]:
-    out: Dict[str, float] = {}
-    if not s:
-        return out
-    for part in s.split(","):
-        part = part.strip()
-        if not part:
-            continue
-        if "=" not in part:
-            die(f"Bad key=value list: {s}")
-        k, v = part.split("=", 1)
-        out[normalize(k)] = float(v.strip())
-    return out
-
-def parse_list(s: str) -> List[str]:
-    return [normalize(x) for x in s.split(",") if x.strip()]
-
-def resolve_oxide_list(items: List[str], db: "OxideDB", allow_r2o: bool) -> List[str]:
-    """Resolve oxide names case-insensitively against DB oxides (and optional R2O)."""
-    by_lower = {ox.lower(): ox for ox in db.oxides}
-    if allow_r2o:
-        by_lower["r2o"] = "R2O"
-    resolved: List[str] = []
-    unknown: List[str] = []
-    for raw in items:
-        key = raw.strip().lower()
-        if not key:
-            continue
-        ox = by_lower.get(key)
-        if ox is None:
-            unknown.append(raw)
-        else:
-            resolved.append(ox)
-    if unknown:
-        valid = sorted(set(by_lower.values()))
-        die("Unknown oxide(s): " + ", ".join(unknown) + "\nValid: " + ", ".join(valid))
-    return resolved
-
-def _parse_recipe_lines(lines: List[str]) -> Dict[str, float]:
-    recipe: Dict[str, float] = {}
-    r = csv.DictReader(lines)
-    if not r.fieldnames or "material" not in r.fieldnames or "parts" not in r.fieldnames:
-        die("Recipe CSV must have headers: material,parts")
-    for row in r:
-        if row is None:
-            continue
-        m_raw = row.get("material")
-        p_raw = row.get("parts")
-        if m_raw is None or p_raw is None:
-            continue
-        m = normalize(m_raw)
-        if not m:
-            continue
-        p = float(p_raw)
-        recipe[m] = recipe.get(m, 0.0) + p
-    return recipe
-
-
-def read_recipe_csv(path: Path) -> Tuple[Dict[str, float], Dict[str, float]]:
-    """
-    Reads a recipe CSV and returns (base_parts, colorant_parts).
-    Convention: any rows after a blank line are treated as colorants.
-    """
-    text = path.read_text(encoding="utf-8")
-    lines = text.splitlines()
-    if not lines:
-        die("Recipe CSV is empty.")
-    header = lines[0]
-    base_lines = [header]
-    color_lines = [header]
-    in_color = False
-    for line in lines[1:]:
-        if line.strip() == "":
-            in_color = True
-            continue
-        if in_color:
-            color_lines.append(line)
-        else:
-            base_lines.append(line)
-    base_recipe = _parse_recipe_lines(base_lines)
-    color_recipe = _parse_recipe_lines(color_lines) if len(color_lines) > 1 else {}
-    return base_recipe, color_recipe
-
-
-# ----------------------------
-# DB loading + chemistry
-# ----------------------------
-
-@dataclass
-class OxideDB:
-    mw: Dict[str, float]                 # oxide -> g/mol
-    materials: pd.DataFrame              # index = material, oxide columns wt% per 100g
-    oxides: List[str]                    # oxide names
-
-    @staticmethod
-    def load(db_path: Path) -> "OxideDB":
-        if not db_path.exists():
-            die(f"DB not found at {db_path}. Put data.csv next to this script or pass --db.")
-        df = pd.read_csv(db_path).rename(columns={"Unnamed: 0": "Material"})
-        if "Material" not in df.columns:
-            die("DB CSV missing 'Unnamed: 0' column (expected Matrix-style format).")
-
-        oxide_cols = [c for c in df.columns if c not in ["Material", "Total"]]
-        mw_row = df.iloc[0]
-        mw: Dict[str, float] = {}
-        for ox in oxide_cols:
-            v = mw_row.get(ox)
-            if pd.isna(v):
-                continue
-            mw[ox] = float(v)
-
-        materials = df.iloc[1:].set_index("Material")
-        for ox in oxide_cols:
-            if ox in materials.columns:
-                materials[ox] = pd.to_numeric(materials[ox], errors="coerce")
-
-        return OxideDB(mw=mw, materials=materials, oxides=list(mw.keys()))
-
-    def has_material(self, name: str) -> bool:
-        return name in self.materials.index
-
-    def all_materials(self) -> List[str]:
-        return self.materials.index.tolist()
-
-    def coeffs_moles_per_gram(self, material: str) -> Dict[str, float]:
-        """a[o] = moles oxide o per gram material"""
-        row = self.materials.loc[material]
-        a: Dict[str, float] = {}
-        for ox, mwv in self.mw.items():
-            pct = row.get(ox)
-            if pct is None or pd.isna(pct):
-                continue
-            a[ox] = (float(pct) / 100.0) / mwv
-        return a
-
-    def oxide_moles_from_recipe(self, recipe_db_names: Dict[str, float]) -> Dict[str, float]:
-        moles: Dict[str, float] = {ox: 0.0 for ox in self.oxides}
-        for mat, grams in recipe_db_names.items():
-            if grams == 0:
-                continue
-            a = self.coeffs_moles_per_gram(mat)
-            for ox, k in a.items():
-                moles[ox] += grams * k
-        return {ox: v for ox, v in moles.items() if abs(v) > 1e-12}
-
-    def umf_from_moles(self, moles: Dict[str, float], fluxes: List[str]) -> Tuple[Dict[str, float], float]:
-        F = sum(moles.get(f, 0.0) for f in fluxes)
-        if F <= 0:
-            die("Flux sum is zero; cannot compute UMF (no flux oxides present).")
-        return {ox: moles.get(ox, 0.0) / F for ox in moles.keys()}, F
-
-
-# ----------------------------
-# Alias + inventory state
-# ----------------------------
-
-@dataclass
-class AliasState:
-    aliases: Dict[str, str] = field(default_factory=dict)  # user_name -> db_name
-
-    @staticmethod
-    def load(path: Path) -> "AliasState":
-        data = load_json(path, default_obj={})
-        raw = data.get("aliases", {}) if isinstance(data, dict) else {}
-        out: Dict[str, str] = {}
-        for k, v in raw.items():
-            out[normalize(k)] = normalize(v)
-        return AliasState(out)
-
-    def save(self, path: Path) -> None:
-        save_json(path, {"aliases": self.aliases})
-
-    def resolve(self, user_name: str, db: OxideDB) -> Optional[str]:
-        """Resolve user_name to a DB material name."""
-        u = normalize(user_name)
-        if db.has_material(u):
-            return u
-        if u in self.aliases and db.has_material(self.aliases[u]):
-            return self.aliases[u]
-        nk = norm_key(u)
-        for m in db.all_materials():
-            if norm_key(m) == nk:
-                return m
-        return None
-
-
-@dataclass
-class InventoryState:
-    base: Set[str] = field(default_factory=set)       # user-facing names
-
-    @staticmethod
-    def load(path: Path) -> "InventoryState":
-        data = load_json(path, default_obj={})
-        base = set(normalize(x) for x in (data.get("base", []) if isinstance(data, dict) else []))
-        return InventoryState(base=base)
-
-    def save(self, path: Path) -> None:
-        save_json(path, {"base": sorted(self.base)})
-
-
-# ----------------------------
-# Seger groups + reporting
-# ----------------------------
-
-# Classic Seger groupings (you can tweak as desired)
-SEGER_RO   = ["MgO", "CaO", "SrO", "BaO", "ZnO"]       # RO fluxes (divalents)
-SEGER_R2O  = ["Li2O", "Na2O", "K2O"]                   # R2O fluxes (monovalents)
-SEGER_R2O3 = ["Al2O3", "B2O3", "Fe2O3"]                # intermediates/viscosity group (B2O3 is special-case but often here)
-SEGER_RO2  = ["SiO2", "TiO2"]                          # glass formers
-
-def seger_group_sums(umf: Dict[str, float]) -> Dict[str, float]:
-    ro = sum(umf.get(o, 0.0) for o in SEGER_RO)
-    r2o = sum(umf.get(o, 0.0) for o in SEGER_R2O)
-    r2o3 = sum(umf.get(o, 0.0) for o in SEGER_R2O3)
-    ro2 = sum(umf.get(o, 0.0) for o in SEGER_RO2)
-    return {"RO": ro, "R2O": r2o, "R2O3": r2o3, "RO2": ro2}
-
-def print_umf_block(db, recipe_db: Dict[str, float], fluxes: List[str], label: str, show_groups: bool) -> Dict[str, float]:
-    moles = db.oxide_moles_from_recipe(recipe_db)
-    umf, F = db.umf_from_moles(moles, fluxes)
-
-    print(f"\n{label}")
-    print(f"  Flux moles: {F:.6f}")
-    for ox in ["Na2O","K2O","CaO","MgO","B2O3","Al2O3","SiO2","Fe2O3","TiO2"]:
-        if ox in umf and abs(umf[ox]) > 1e-8:
-            print(f"  {ox:6s}: {umf[ox]:.4f}")
-
-    if show_groups:
-        g = seger_group_sums(umf)
-        ro = g["RO"]
-        r2o = g["R2O"]
-        r2o3 = g["R2O3"]
-        ro2 = g["RO2"]
-        flux_total = ro + r2o  # should be ~1.0 by UMF normalization, aside from floating error
-
-        def safe_div(a: float, b: float) -> float:
-            return a / b if abs(b) > 1e-12 else float("nan")
-
-        print("\n  Seger group sums (UMF):")
-        print(f"    RO   : {ro:.4f}")
-        print(f"    R2O  : {r2o:.4f}")
-        print(f"    R2O3 : {r2o3:.4f}")
-        print(f"    RO2  : {ro2:.4f}")
-        print(f"    Flux (RO+R2O): {flux_total:.4f}")
-
-        print("\n  Group ratios:")
-        print(f"    RO/R2O       : {safe_div(ro, r2o):.4f}")
-        print(f"    (RO+R2O)/R2O3 : {safe_div(flux_total, r2o3):.4f}")
-        print(f"    RO2/R2O3      : {safe_div(ro2, r2o3):.4f}")
-        print(f"    RO2/(RO+R2O)  : {safe_div(ro2, flux_total):.4f}")
-
-    return umf
-
-
-def split_recipe_fixed_variable(
-    db: OxideDB,
-    alias: AliasState,
-    base_user: Dict[str, float],
-    colorant_user: Dict[str, float],
-) -> Tuple[Dict[str, float], Dict[str, float], float, float]:
-    """
-    Returns (fixed_db, variable_db, fixed_total_parts, variable_total_parts)
-
-    fixed_db:    DB-name -> parts (materials listed as colorants in recipe)
-    variable_db: DB-name -> parts (base materials in recipe)
-    """
-    fixed_db: Dict[str, float] = {}
-    variable_db: Dict[str, float] = {}
-
-    for u, p in colorant_user.items():
-        r = alias.resolve(u, db)
-        if r is None:
-            die(f"Recipe material not found: '{u}' (add alias or use exact DB name)")
-        fixed_db[r] = fixed_db.get(r, 0.0) + p
-
-    for u, p in base_user.items():
-        r = alias.resolve(u, db)
-        if r is None:
-            die(f"Recipe material not found: '{u}' (add alias or use exact DB name)")
-        variable_db[r] = variable_db.get(r, 0.0) + p
-
-    fixed_total = sum(fixed_db.values())
-    var_total = sum(variable_db.values())
-    return fixed_db, variable_db, fixed_total, var_total
-
-
-# ----------------------------
-# MILP solver
-# ----------------------------
-
-def solve_substitution_milp(
-    db: OxideDB,
-    alias: AliasState,
-    inv: InventoryState,
-    fixed_db: Dict[str, float],
-    variable_db: Dict[str, float],
-    ban_user_names: List[str],
-    baseline_swap: Optional[Tuple[str, str]],
-    max_materials: int,
-    targets: List[str],
-    fluxes: List[str],
-    dev_weight: float,
-) -> Dict[str, float]:
-    """
-    Default behavior is lexicographic:
-      (1) minimize UMF mismatch (weighted slack)
-      (2) minimize # of new materials
-      (3) minimize recipe deviation (L1 vs baseline)
-    Flags dev_weight/new_mat_penalty/slack_weight are kept for compatibility but are not the primary mechanism.
-    """
-    if pywraplp is None:
-        die("ortools is required. Install with: python3 -m pip install ortools")
-
-    # Target UMF from original (full) recipe: fixed + variable
-    recipe_full = dict(fixed_db)
-    for k, v in variable_db.items():
-        recipe_full[k] = recipe_full.get(k, 0.0) + v
-
-    orig_moles = db.oxide_moles_from_recipe(recipe_full)
-    orig_umf, _ = db.umf_from_moles(orig_moles, fluxes)
-
-    # Fixed oxide moles and mass
-    fixed_moles = db.oxide_moles_from_recipe(fixed_db)
-    fixed_mass = sum(fixed_db.values())
-
-    # Allowed materials = inventory base (resolved to DB names)
-    allowed_db: Set[str] = set()
-    unresolved: List[str] = []
-    for u in sorted(inv.base):
-        r = alias.resolve(u, db)
-        if r is None:
-            unresolved.append(u)
-        else:
-            allowed_db.add(r)
-    if unresolved:
-        die("Inventory base has unresolved materials (add aliases):\n  - " + "\n  - ".join(unresolved))
-    if not allowed_db:
-        die("Inventory base is empty. Add materials via: inventory add 'Name'")
-
-    # Ban list resolved
-    banned_db: Set[str] = set()
-    for u in ban_user_names:
-        r = alias.resolve(u, db)
-        if r is None:
-            if db.has_material(u):
-                r = u
-            else:
-                die(f"Ban material not found: '{u}'")
-        banned_db.add(r)
-
-    allowed_db = {m for m in allowed_db if m not in banned_db}
-    if not allowed_db:
-        die("After banning, no allowed materials remain in inventory base.")
-
-    mats = sorted(allowed_db)
-
-    solver = pywraplp.Solver.CreateSolver("CBC")
-    if solver is None:
-        die("Failed to create CBC solver (ortools install issue).")
-
-    # Decision vars
-    x = {m: solver.NumVar(0.0, solver.infinity(), f"x[{m}]") for m in mats}
-    y = {m: solver.IntVar(0, 1, f"y[{m}]") for m in mats}
-
-    # Ingredient cap and on/off coupling
-    M = 100.0
-    for m in mats:
-        solver.Add(x[m] <= M * y[m])
-    solver.Add(sum(y[m] for m in mats) <= int(max_materials))
-
-    # Total mass = 100 - fixed colorants
-    variable_mass_target = 100.0 - fixed_mass
-    if variable_mass_target <= 0.0:
-        die(f"Fixed colorants sum to {fixed_mass:.6g}, leaving no mass for base materials.")
-    solver.Add(sum(x[m] for m in mats) == variable_mass_target)
-
-    # Baseline (variable-only, DB names), including baseline swap if provided
-    baseline_db = dict(variable_db)
-    if baseline_swap is not None:
-        left_user, right_user = baseline_swap
-        left = alias.resolve(left_user, db) or left_user
-        right = alias.resolve(right_user, db) or right_user
-        if not db.has_material(left):
-            die(f"Baseline swap left not in DB: '{left_user}' -> '{left}'")
-        if not db.has_material(right):
-            die(f"Baseline swap right not in DB: '{right_user}' -> '{right}'")
-        moved = baseline_db.get(left, 0.0)
-        baseline_db[left] = 0.0
-        baseline_db[right] = baseline_db.get(right, 0.0) + moved
-
-    core_set = {m for m, v in baseline_db.items() if abs(v) > 1e-9}
-
-    # Oxide mole expressions
-    a = {m: db.coeffs_moles_per_gram(m) for m in mats}
-
-    def n_ox(ox: str):
-        return float(fixed_moles.get(ox, 0.0)) + sum(a[m].get(ox, 0.0) * x[m] for m in mats)
-
-    # Flux sum for UMF normalization
-    F = sum(n_ox(f) for f in fluxes)
-    solver.Add(F >= 1e-9)
-
-    # Slack vars for UMF targets
-    splus, sminus = {}, {}
-    for t in targets:
-        splus[t] = solver.NumVar(0.0, solver.infinity(), f"splus[{t}]")
-        sminus[t] = solver.NumVar(0.0, solver.infinity(), f"sminus[{t}]")
-
-    # UMF constraints with slack:
-    # n_target - target*F == s+ - s-
-    for t in targets:
-        if t == "R2O":
-            t_val = float(orig_umf.get("Na2O", 0.0) + orig_umf.get("K2O", 0.0))
-            solver.Add((n_ox("Na2O") + n_ox("K2O")) - t_val * F == splus[t] - sminus[t])
-        else:
-            t_val = float(orig_umf.get(t, 0.0))
-            solver.Add(n_ox(t) - t_val * F == splus[t] - sminus[t])
-
-    # Deviation from baseline (L1)
-    dplus, dminus = {}, {}
-    for m in mats:
-        dplus[m] = solver.NumVar(0.0, solver.infinity(), f"dplus[{m}]")
-        dminus[m] = solver.NumVar(0.0, solver.infinity(), f"dminus[{m}]")
-        b = float(baseline_db.get(m, 0.0))
-        solver.Add(x[m] - b == dplus[m] - dminus[m])
-
-    # New material count (materials not in baseline core)
-    new_mats = solver.NumVar(0.0, solver.infinity(), "new_mats")
-    solver.Add(new_mats == sum(y[m] for m in mats if m not in core_set))
-
-    # Weighted slack score S (primary objective)
-    S = solver.NumVar(0.0, solver.infinity(), "S")
-    solver.Add(
-        S == sum(float(INTERNAL_SLACK_WEIGHTS.get(t, 1.0)) * (splus[t] + sminus[t]) for t in targets)
-    )
-
-
-    # --------------------------
-    # Stage 1: minimize slack S
-    # --------------------------
-    obj = solver.Objective()
-    obj.SetCoefficient(S, 1.0)
-    obj.SetMinimization()
-    status = solver.Solve()
-    if status != pywraplp.Solver.OPTIMAL:
-        die("MILP infeasible or solver error in stage-1 (slack minimization).")
-
-    S_star = S.solution_value()
-
-    # Constrain to (near) best slack
-    # CBC is floating-point; keep a small tolerance to avoid numeric churn.
-    tol = 1e-7
-    solver.Add(S <= S_star + tol)
-
-    # -------------------------------
-    # Stage 2: minimize new materials
-    # -------------------------------
-    obj = solver.Objective()
-    obj.SetCoefficient(new_mats, 1.0)
-    obj.SetMinimization()
-    status = solver.Solve()
-    if status != pywraplp.Solver.OPTIMAL:
-        die("Solver error in stage-2 (min new materials).")
-
-    new_star = new_mats.solution_value()
-    solver.Add(new_mats <= new_star + 1e-9)
-
-    # ---------------------------------------
-    # Stage 3: minimize deviation from baseline
-    # ---------------------------------------
-    obj = solver.Objective()
-    # dev_weight retained (this is now the correct place to use it)
-    for m in mats:
-        obj.SetCoefficient(dplus[m], dev_weight)
-        obj.SetCoefficient(dminus[m], dev_weight)
-    obj.SetMinimization()
-
-    status = solver.Solve()
-    if status != pywraplp.Solver.OPTIMAL:
-        die("Solver error in stage-3 (min deviation).")
-
-    sol_var = {m: x[m].solution_value() for m in mats if x[m].solution_value() > 1e-6}
-    sol_full = dict(fixed_db)
-    for k, v in sol_var.items():
-        sol_full[k] = sol_full.get(k, 0.0) + v
-    return sol_full
 
 
 # ----------------------------
@@ -605,6 +67,7 @@ def cmd_db_check(args):
         if ox in db.mw:
             print(f"    {ox}: {db.mw[ox]}")
     return 0
+
 
 def cmd_alias_set(args):
     db = OxideDB.load(args.db)
@@ -631,6 +94,7 @@ def cmd_alias_set(args):
     print(f"Saved: {args.aliases}")
     return 0
 
+
 def cmd_alias_list(args):
     alias = AliasState.load(args.aliases)
     if not alias.aliases:
@@ -639,6 +103,7 @@ def cmd_alias_list(args):
     for k in sorted(alias.aliases.keys()):
         print(f"{k} -> {alias.aliases[k]}")
     return 0
+
 
 def cmd_inventory_add(args):
     db = OxideDB.load(args.db)
@@ -659,6 +124,7 @@ def cmd_inventory_add(args):
     print(f"Saved: {args.inventory}")
     return 0
 
+
 def cmd_inventory_remove(args):
     inv = InventoryState.load(args.inventory)
     name = normalize(args.material)
@@ -673,12 +139,14 @@ def cmd_inventory_remove(args):
     print(f"Removed: {name}")
     return 0
 
+
 def cmd_inventory_list(args):
     inv = InventoryState.load(args.inventory)
     print("Base:")
     for m in sorted(inv.base):
         print(f"  - {m}")
     return 0
+
 
 def cmd_inventory_report(args):
     db = OxideDB.load(args.db)
@@ -703,6 +171,7 @@ def cmd_inventory_report(args):
     report("Base materials:", inv.base)
     return 0
 
+
 def cmd_umf(args):
     db = OxideDB.load(args.db)
     alias = AliasState.load(args.aliases)
@@ -726,9 +195,10 @@ def cmd_umf(args):
 
     flux_raw = parse_list(args.fluxes) if args.fluxes else FLUXES_DEFAULT
     fluxes = resolve_oxide_list(flux_raw, db, allow_r2o=False)
-    # This prints a compact UMF selection plus groups if requested
+
     print_umf_block(db, recipe_db, fluxes, "UMF", show_groups=args.show_groups)
     return 0
+
 
 def cmd_substitute(args):
     db = OxideDB.load(args.db)
@@ -750,6 +220,7 @@ def cmd_substitute(args):
 
     flux_raw = parse_list(args.fluxes) if args.fluxes else FLUXES_DEFAULT
     fluxes = resolve_oxide_list(flux_raw, db, allow_r2o=False)
+
     want_umf = bool(args.show_umf or args.show_groups)
 
     fixed_db, variable_db, _fixed_total, _var_total = split_recipe_fixed_variable(
@@ -886,6 +357,7 @@ def build_parser():
 
     return p
 
+
 def main():
     parser = build_parser()
     args = parser.parse_args()
@@ -904,6 +376,7 @@ def main():
     state_dir.mkdir(parents=True, exist_ok=True)
 
     return args.func(args)
+
 
 if __name__ == "__main__":
     raise SystemExit(main())
