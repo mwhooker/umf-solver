@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "umf-solver"
+version = "0.1.0"
+description = "CLI tools for glaze UMF calculation and substitution solving."
+requires-python = ">=3.10"
+dependencies = [
+    "ortools>=9.11,<10",
+    "pandas>=2.2,<3",
+]
+
+[project.scripts]
+umf = "umf:main"
+
+[tool.setuptools]
+py-modules = [
+    "constants",
+    "db",
+    "recipe",
+    "reporting",
+    "solver",
+    "state",
+    "umf",
+    "utils",
+]
