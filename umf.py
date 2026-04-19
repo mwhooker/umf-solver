@@ -174,6 +174,25 @@ def cmd_inventory_report(args):
     return 0
 
 
+def cmd_ingredient_resolve(args):
+    db = OxideDB.load(args.db)
+    alias = AliasState.load(args.aliases)
+    inv = InventoryState.load(args.inventory)
+    resolver = IngredientResolver(db=db, alias=alias, inventory=inv)
+
+    for raw_name in args.ingredients:
+        match = resolver.resolve(raw_name, provider=args.provider)
+        print(f"{match.query}:")
+        print(f"  status: {match.status}")
+        if match.resolved_name is not None:
+            print(f"  resolved: {match.resolved_name}")
+        print(f"  source: {match.source}")
+        if match.candidates:
+            print(f"  candidates: {', '.join(match.candidates)}")
+
+    return 0
+
+
 def cmd_import_recipe(args):
     db = OxideDB.load(args.db)
     alias = AliasState.load(args.aliases)
@@ -384,6 +403,20 @@ def build_parser():
 
     sp2 = sub2.add_parser("report", help="Report resolution vs DB.")
     sp2.set_defaults(func=cmd_inventory_report)
+
+    # ingredient
+    sp = sub.add_parser("ingredient", help="Ingredient lookup and resolution helpers.")
+    sub2 = sp.add_subparsers(dest="ingredient_cmd", required=True)
+
+    sp2 = sub2.add_parser("resolve", help="Resolve ingredient names against DB, aliases, and provider synonyms.")
+    sp2.add_argument("ingredients", nargs="+", help="One or more ingredient names to resolve")
+    sp2.add_argument(
+        "--provider",
+        choices=["generic", "digitalfire", "glazy"],
+        default="generic",
+        help="Provider-specific synonym set to apply during resolution",
+    )
+    sp2.set_defaults(func=cmd_ingredient_resolve)
 
     # import
     sp = sub.add_parser("import-recipe", help="Import a recipe from a URL or local file.")
