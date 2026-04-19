@@ -1,0 +1,13 @@
+{
+  "name": "Redart Test",
+  "provider": "generic",
+  "source": "manual",
+  "lines": [
+    {"original_name": "Soda Ash", "amount": 17.27, "role": "base", "provider": "generic", "order": 0},
+    {"original_name": "Kona F-4 Feldspar", "amount": 9.82, "role": "base", "provider": "generic", "order": 1},
+    {"original_name": "Nepheline Syenite", "amount": 40.91, "role": "base", "provider": "generic", "order": 2},
+    {"original_name": "Edgar Plastic Kaolin", "amount": 18.18, "role": "base", "provider": "generic", "order": 3},
+    {"original_name": "Kentucky Ball Clay (OM 4)", "amount": 13.82, "role": "base", "provider": "generic", "order": 4},
+    {"original_name": "Cedar Heights Redart", "amount": 6.0, "role": "addition", "provider": "generic", "order": 5}
+  ]
+}

@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 from db import OxideDB
 from ingredient_api import IngredientResolver
-from ontology import OntologyCatalog
+from ontology import OntologyCatalog, SourceRecipe
 from state import MaterialMappings, StudioInventory
 from umf import cmd_ingredient_resolve, cmd_inventory_inspect, cmd_mapping_set
 
@@ -128,3 +128,19 @@ class IngredientResolverTests(unittest.TestCase):
         text = out.getvalue()
         self.assertIn("status: ambiguous_concept", text)
         self.assertIn("concept: Potash Feldspar", text)
+
+    def test_redart_recipe_surfaces_real_world_ontology_gaps_without_guessing(self) -> None:
+        recipe = SourceRecipe.load(ROOT / "recipes" / "redart_test.source.json")
+        resolver = IngredientResolver(self.db, self.catalog, StudioInventory(), MaterialMappings())
+
+        statuses = {
+            line.original_name: resolver.resolve(line.original_name, provider=recipe.provider).status
+            for line in recipe.lines
+        }
+
+        self.assertEqual(statuses["Soda Ash"], "exact_material")
+        self.assertEqual(statuses["Nepheline Syenite"], "concept_material")
+        self.assertEqual(statuses["Kona F-4 Feldspar"], "unresolved")
+        self.assertEqual(statuses["Edgar Plastic Kaolin"], "unresolved")
+        self.assertEqual(statuses["Kentucky Ball Clay (OM 4)"], "unresolved")
+        self.assertEqual(statuses["Cedar Heights Redart"], "unresolved")

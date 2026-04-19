@@ -160,3 +160,19 @@ class RealWorldExampleTests(unittest.TestCase):
         )
         self.assertAlmostEqual(sum(solved.values()), 100.0, places=6)
         self.assertNotIn("Neph Sy", solved)
+
+    def test_redart_fixture_cannot_resolve_until_missing_canonical_materials_exist(self) -> None:
+        recipe = SourceRecipe.load(ROOT / "recipes" / "redart_test.source.json")
+        inventory = StudioInventory()
+        inventory.add("Soda Ash", "Soda Ash")
+        inventory.add("Neph Sy", "Neph Sy")
+
+        with self.assertRaises(SystemExit):
+            resolve_source_recipe_to_studio(
+                db=self.db,
+                catalog=self.catalog,
+                inventory=inventory,
+                mappings=MaterialMappings(),
+                recipe=recipe,
+                max_materials=6,
+            )

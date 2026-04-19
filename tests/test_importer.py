@@ -5,6 +5,8 @@ from pathlib import Path
 from importer import import_recipe
 from ontology import SourceRecipe
 
+ROOT = Path(__file__).resolve().parents[1]
+
 
 DIGITALFIRE_FIXTURE = """<!doctype html>
 <html>
@@ -84,3 +86,15 @@ class ImporterTests(unittest.TestCase):
         self.assertEqual(loaded.provider, recipe.provider)
         self.assertEqual([(line.original_name, line.role) for line in loaded.lines],
                          [(line.original_name, line.role) for line in recipe.lines])
+
+    def test_manual_redart_fixture_preserves_base_and_addition_structure(self) -> None:
+        recipe = SourceRecipe.load(ROOT / "recipes" / "redart_test.source.json")
+
+        self.assertEqual(recipe.name, "Redart Test")
+        self.assertEqual(recipe.provider, "generic")
+        self.assertEqual(len(recipe.lines), 6)
+        self.assertEqual([line.role for line in recipe.lines[:5]], ["base"] * 5)
+        self.assertEqual(recipe.lines[5].role, "addition")
+        self.assertEqual(recipe.lines[5].original_name, "Cedar Heights Redart")
+        self.assertAlmostEqual(sum(line.amount for line in recipe.lines if line.role == "base"), 100.0, places=6)
+        self.assertAlmostEqual(sum(line.amount for line in recipe.lines if line.role == "addition"), 6.0, places=6)
