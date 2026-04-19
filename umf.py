@@ -33,7 +33,7 @@ import argparse
 from pathlib import Path
 from typing import Dict, Set, Tuple
 
-from constants import DEFAULT_DEV_WEIGHT, DEFAULT_TARGETS, FLUXES_DEFAULT
+from constants import DEFAULT_TARGETS, FLUXES_DEFAULT
 from db import OxideDB
 from recipe import read_recipe_csv
 from reporting import print_umf_block
@@ -265,10 +265,9 @@ def cmd_substitute(args):
         max_materials=int(args.max_materials),
         targets=targets,
         fluxes=fluxes,
-        dev_weight=float(args.dev_weight),
     )
 
-    print("\nSubstitution result (DB names), sum=100:")
+    print("\nSubstitution result (DB names):")
     total = sum(sol.values())
     for m in sorted(sol.keys()):
         print(f"  {m}: {sol[m]:.4f}")
@@ -348,7 +347,6 @@ def build_parser():
     sp.add_argument("--max-materials", default="6", help="Max number of materials in output recipe")
     sp.add_argument("--targets", default=",".join(DEFAULT_TARGETS), help="UMF targets to match with slack")
     sp.add_argument("--fluxes", default=",".join(FLUXES_DEFAULT), help="Comma list of flux oxides")
-    sp.add_argument("--dev-weight", default=str(DEFAULT_DEV_WEIGHT), help="Weight on recipe variation (L1)")
     sp.add_argument("--show-umf", action="store_true",
                     help="Print target, baseline, and solution UMF blocks")
     sp.add_argument("--show-groups", action="store_true",

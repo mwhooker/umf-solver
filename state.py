@@ -27,9 +27,10 @@ class AliasState:
         u = normalize(user_name)
         if db.has_material(u):
             return u
-        if u in self.aliases and db.has_material(self.aliases[u]):
-            return self.aliases[u]
         nk = norm_key(u)
+        for alias_name, db_name in self.aliases.items():
+            if norm_key(alias_name) == nk and db.has_material(db_name):
+                return db_name
         for m in db.all_materials():
             if norm_key(m) == nk:
                 return m

@@ -54,7 +54,6 @@ def solve_substitution_milp(
     max_materials: int,
     targets: List[str],
     fluxes: List[str],
-    dev_weight: float,
 ) -> Dict[str, float]:
     """
     Default behavior is lexicographic:
@@ -75,7 +74,7 @@ def solve_substitution_milp(
 
     # Fixed oxide moles and mass
     fixed_moles = db.oxide_moles_from_recipe(fixed_db)
-    fixed_mass = sum(fixed_db.values())
+    variable_mass_target = sum(variable_db.values())
 
     # Allowed materials = inventory base (resolved to DB names)
     allowed_db: Set[str] = set()
@@ -102,9 +101,9 @@ def solve_substitution_milp(
                 die(f"Ban material not found: '{u}'")
         banned_db.add(r)
 
-    allowed_db = {m for m in allowed_db if m not in banned_db}
+    allowed_db = {m for m in allowed_db if m not in banned_db and m not in fixed_db}
     if not allowed_db:
-        die("After banning, no allowed materials remain in inventory base.")
+        die("After banning fixed colorants and unavailable materials, no allowed base materials remain in inventory.")
 
     mats = sorted(allowed_db)
 
@@ -117,15 +116,14 @@ def solve_substitution_milp(
     y = {m: solver.IntVar(0, 1, f"y[{m}]") for m in mats}
 
     # Ingredient cap and on/off coupling
-    M = 100.0
+    M = variable_mass_target
     for m in mats:
         solver.Add(x[m] <= M * y[m])
     solver.Add(sum(y[m] for m in mats) <= int(max_materials))
 
-    # Total mass = 100 - fixed colorants
-    variable_mass_target = 100.0 - fixed_mass
+    # Keep the original base recipe total unchanged; colorants are additions on top.
     if variable_mass_target <= 0.0:
-        die(f"Fixed colorants sum to {fixed_mass:.6g}, leaving no mass for base materials.")
+        die("Recipe has no base-material mass left to substitute.")
     solver.Add(sum(x[m] for m in mats) == variable_mass_target)
 
     # Baseline (variable-only, DB names), including baseline swap if provided
@@ -222,10 +220,9 @@ def solve_substitution_milp(
     # Stage 3: minimize deviation from baseline
     # ---------------------------------------
     obj = solver.Objective()
-    # dev_weight retained (this is now the correct place to use it)
     for m in mats:
-        obj.SetCoefficient(dplus[m], dev_weight)
-        obj.SetCoefficient(dminus[m], dev_weight)
+        obj.SetCoefficient(dplus[m], 1.0)
+        obj.SetCoefficient(dminus[m], 1.0)
     obj.SetMinimization()
 
     status = solver.Solve()
