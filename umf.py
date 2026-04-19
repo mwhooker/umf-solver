@@ -240,16 +240,6 @@ def resolve_source_recipe_to_studio(
                 fixed_base_reasons[material] = match.status
                 continue
 
-            direct_substitute_chosen = False
-            for substitute_material in catalog.direct_substitutes_for(material):
-                studio_substitute = choose_unique_studio_material(inventory, substitute_material)
-                if studio_substitute is not None:
-                    fixed_base_materials[substitute_material] = fixed_base_materials.get(substitute_material, 0.0) + line.amount
-                    fixed_base_reasons[substitute_material] = f"direct_substitution:{material}"
-                    direct_substitute_chosen = True
-                    break
-            if direct_substitute_chosen:
-                continue
             continue
 
         unresolved.append(f"base '{line.original_name}' requires confirmation before resolution: {match.status}")

@@ -37,7 +37,7 @@ class RealWorldExampleTests(unittest.TestCase):
         self.assertAlmostEqual(umf["SiO2"], 3.4845, places=3)
         self.assertAlmostEqual(umf["Al2O3"], 0.5465, places=3)
 
-    def test_direct_substitution_uses_explicit_rule_only(self) -> None:
+    def test_solver_first_resolution_rebalances_when_only_substitute_is_stocked(self) -> None:
         source_recipe = SourceRecipe(
             name="Custer Swap",
             provider="generic",
@@ -64,9 +64,34 @@ class RealWorldExampleTests(unittest.TestCase):
         addition_lines = [line for line in studio_recipe.lines if line.role == "addition"]
         self.assertEqual(len(base_lines), 1)
         self.assertEqual(base_lines[0].material, "Mahavir")
-        self.assertEqual(base_lines[0].derivation_reason, "direct_substitution:Custer")
+        self.assertEqual(base_lines[0].derivation_reason, "umf_reformulation")
+        self.assertAlmostEqual(base_lines[0].amount, 100.0, places=6)
         self.assertEqual(len(addition_lines), 1)
         self.assertEqual(addition_lines[0].name, "RIO")
+
+    def test_kona_f4_rebalances_to_minspar_when_only_substitute_is_stocked(self) -> None:
+        source_recipe = SourceRecipe(
+            name="Kona F4 Swap",
+            provider="generic",
+            source="test",
+            lines=[SourceRecipeLine("Kona F-4 Feldspar", 100.0, "base", "generic", 0)],
+        )
+        inventory = StudioInventory()
+        inventory.add("Minspar Soda Spar", "Minspar")
+
+        studio_recipe = resolve_source_recipe_to_studio(
+            db=self.db,
+            catalog=self.catalog,
+            inventory=inventory,
+            mappings=MaterialMappings(),
+            recipe=source_recipe,
+            max_materials=6,
+        )
+
+        self.assertEqual(len(studio_recipe.lines), 1)
+        self.assertEqual(studio_recipe.lines[0].material, "Minspar")
+        self.assertEqual(studio_recipe.lines[0].derivation_reason, "umf_reformulation")
+        self.assertAlmostEqual(studio_recipe.lines[0].amount, 100.0, places=6)
 
     def test_same_concept_materials_do_not_auto_substitute_without_rule(self) -> None:
         source_recipe = SourceRecipe(
