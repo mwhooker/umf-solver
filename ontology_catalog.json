@@ -56,6 +56,7 @@
     "Custer": "Potash Feldspar",
     "Mahavir": "Potash Feldspar",
     "Minspar": "Soda Feldspar",
+    "Kona F-4 Feldspar": "Soda Feldspar",
     "Neph Sy": "Nepheline Syenite",
     "EPK": "Kaolin",
     "Flint": "Silica",
@@ -67,7 +68,9 @@
     "3124 (Frit)": "Frit 3124"
   },
   "material_synonyms": {
-    "edgar plastic kaolin": "EPK"
+    "edgar plastic kaolin": "EPK",
+    "f-4 feldspar": "Kona F-4 Feldspar",
+    "kona f4 feldspar": "Kona F-4 Feldspar"
   },
   "direct_substitution_rules": [
     {"from_material": "Custer", "to_material": "Mahavir"}

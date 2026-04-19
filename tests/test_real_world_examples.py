@@ -165,6 +165,7 @@ class RealWorldExampleTests(unittest.TestCase):
         recipe = SourceRecipe.load(ROOT / "recipes" / "redart_test.source.json")
         inventory = StudioInventory()
         inventory.add("Soda Ash", "Soda Ash")
+        inventory.add("Kona F-4 Bag", "Kona F-4 Feldspar")
         inventory.add("Neph Sy", "Neph Sy")
         inventory.add("EPK", "EPK")
 
