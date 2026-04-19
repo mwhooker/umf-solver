@@ -19,6 +19,7 @@ umf = "umf:main"
 py-modules = [
     "constants",
     "db",
+    "importer",
     "recipe",
     "reporting",
     "solver",

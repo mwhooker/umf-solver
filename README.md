@@ -16,6 +16,23 @@ You can also run the module directly:
 uv run python umf.py substitute --recipe recipes/hamada_rust.csv --show-umf
 ```
 
+## Importing Recipes
+
+You can import a Digitalfire recipe URL or a local text/export file:
+
+```bash
+uv run umf import-recipe https://digitalfire.com/recipe/g1214m --save-recipe recipes/g1214m.csv
+uv run umf import-recipe /path/to/glazy-export.txt --save-recipe recipes/imported.csv
+```
+
+To pull imported ingredient names into your inventory as-is:
+
+```bash
+uv run umf import-recipe /path/to/recipe.txt --add-to-inventory
+```
+
+Note: direct `glazy.org` recipe URLs are JavaScript-driven, so import those by saving/exporting the recipe text locally first.
+
 ## Dependencies
 
 The current runtime dependencies are:

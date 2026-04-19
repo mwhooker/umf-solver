@@ -35,6 +35,7 @@ from typing import Dict, Set, Tuple
 
 from constants import DEFAULT_TARGETS, FLUXES_DEFAULT
 from db import OxideDB
+from importer import import_recipe, write_recipe_csv
 from recipe import read_recipe_csv
 from reporting import print_umf_block
 from solver import solve_substitution_milp, split_recipe_fixed_variable
@@ -169,6 +170,45 @@ def cmd_inventory_report(args):
         print("")
 
     report("Base materials:", inv.base)
+    return 0
+
+
+def cmd_import_recipe(args):
+    db = OxideDB.load(args.db)
+    alias = AliasState.load(args.aliases)
+    inv = InventoryState.load(args.inventory)
+
+    imported = import_recipe(args.source)
+
+    print(f"Imported recipe from: {imported.source}")
+    if imported.name:
+        print(f"Name: {imported.name}")
+
+    print("\nBase ingredients:")
+    for material, parts in imported.base.items():
+        resolved = alias.resolve(material, db)
+        status = resolved if resolved is not None else "UNRESOLVED"
+        print(f"  {material}: {parts:.6g} [{status}]")
+
+    if imported.additions:
+        print("\nAdditional ingredients:")
+        for material, parts in imported.additions.items():
+            resolved = alias.resolve(material, db)
+            status = resolved if resolved is not None else "UNRESOLVED"
+            print(f"  {material}: {parts:.6g} [{status}]")
+
+    if args.save_recipe is not None:
+        write_recipe_csv(args.save_recipe, imported)
+        print(f"\nSaved recipe CSV: {args.save_recipe}")
+
+    if args.add_to_inventory:
+        imported_materials = list(imported.base.keys()) + list(imported.additions.keys())
+        for material in imported_materials:
+            inv.base.add(normalize(material))
+        inv.save(args.inventory)
+        print(f"Added {len(imported_materials)} ingredient(s) to inventory.")
+        print(f"Saved: {args.inventory}")
+
     return 0
 
 
@@ -330,6 +370,17 @@ def build_parser():
 
     sp2 = sub2.add_parser("report", help="Report resolution vs DB.")
     sp2.set_defaults(func=cmd_inventory_report)
+
+    # import
+    sp = sub.add_parser("import-recipe", help="Import a recipe from a URL or local file.")
+    sp.add_argument("source", help="Digitalfire URL, local export file, or local text/html file")
+    sp.add_argument("--save-recipe", type=Path, default=None, help="Write imported recipe as CSV")
+    sp.add_argument(
+        "--add-to-inventory",
+        action="store_true",
+        help="Add imported ingredient names to persistent inventory without requiring DB resolution",
+    )
+    sp.set_defaults(func=cmd_import_recipe)
 
     # umf
     sp = sub.add_parser("umf", help="Compute UMF for a recipe CSV.")
