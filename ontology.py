@@ -103,6 +103,7 @@ class OntologyCatalog:
     concepts: Dict[str, IngredientConcept]
     provider_synonyms: Dict[str, Dict[str, str]]
     material_concepts: Dict[str, str]
+    material_synonyms: Dict[str, str]
     direct_substitution_rules: List[DirectSubstitutionRule] = field(default_factory=list)
 
     @staticmethod
@@ -120,11 +121,16 @@ class OntologyCatalog:
             normalize(material): concept
             for material, concept in data.get("material_concepts", {}).items()
         }
+        material_synonyms = {
+            norm_key(term): normalize(material)
+            for term, material in data.get("material_synonyms", {}).items()
+        }
         rules = [DirectSubstitutionRule(**rule) for rule in data.get("direct_substitution_rules", [])]
         return OntologyCatalog(
             concepts=concepts,
             provider_synonyms=provider_synonyms,
             material_concepts=material_concepts,
+            material_synonyms=material_synonyms,
             direct_substitution_rules=rules,
         )
 
@@ -138,6 +144,9 @@ class OntologyCatalog:
 
     def concept_for_material(self, material: str) -> Optional[str]:
         return self.material_concepts.get(normalize(material))
+
+    def material_for_term(self, term: str) -> Optional[str]:
+        return self.material_synonyms.get(norm_key(term))
 
     def materials_for_concept(self, concept: str) -> List[str]:
         return sorted(material for material, member in self.material_concepts.items() if member == concept)

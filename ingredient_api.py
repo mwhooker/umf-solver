@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from typing import List, Optional
 
 from db import OxideDB
-from ontology import OntologyCatalog, StudioMaterial
+from ontology import OntologyCatalog
 from state import MaterialMappings, StudioInventory
 from utils import norm_key, normalize
 
@@ -80,6 +80,18 @@ class IngredientResolver:
                 reason="matched canonical material name",
             )
 
+        material = self.catalog.material_for_term(query)
+        if material is not None:
+            return ResolutionResult(
+                query=query,
+                provider=provider,
+                matched_concept=self.catalog.concept_for_material(material),
+                matched_material=material,
+                matched_studio_material=None,
+                status="material_synonym",
+                reason="matched canonical material synonym",
+            )
+
         mapping = self.mappings.get(provider, query)
         if mapping is not None:
             return ResolutionResult(
@@ -125,5 +137,5 @@ class IngredientResolver:
             matched_material=None,
             matched_studio_material=None,
             status="unresolved",
-            reason="no matching studio material, material, mapping, or concept",
+            reason="no matching studio material, material, material synonym, mapping, or concept",
         )

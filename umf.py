@@ -204,7 +204,7 @@ def resolve_source_recipe_to_studio(
                     )
                 )
                 continue
-            if match.status in {"exact_material", "mapped_material", "concept_material"} and match.matched_material is not None:
+            if match.status in {"exact_material", "material_synonym", "mapped_material", "concept_material"} and match.matched_material is not None:
                 studio_item = choose_unique_studio_material(inventory, match.matched_material)
                 if studio_item is None:
                     unresolved.append(
@@ -231,7 +231,7 @@ def resolve_source_recipe_to_studio(
             fixed_base_reasons[material] = match.status
             continue
 
-        if match.status in {"exact_material", "mapped_material", "concept_material"} and match.matched_material is not None:
+        if match.status in {"exact_material", "material_synonym", "mapped_material", "concept_material"} and match.matched_material is not None:
             material = match.matched_material
             target_base_materials[material] = target_base_materials.get(material, 0.0) + line.amount
             studio_item = choose_unique_studio_material(inventory, material)

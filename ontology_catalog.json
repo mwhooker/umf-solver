@@ -66,6 +66,10 @@
     "3134 (Frit)": "Frit 3134",
     "3124 (Frit)": "Frit 3124"
   },
+  "material_synonyms": {
+    "edgar plastic kaolin": "EPK",
+    "esgar plastic kaolin": "EPK"
+  },
   "direct_substitution_rules": [
     {"from_material": "Custer", "to_material": "Mahavir"}
   ]

@@ -166,6 +166,7 @@ class RealWorldExampleTests(unittest.TestCase):
         inventory = StudioInventory()
         inventory.add("Soda Ash", "Soda Ash")
         inventory.add("Neph Sy", "Neph Sy")
+        inventory.add("EPK", "EPK")
 
         with self.assertRaises(SystemExit):
             resolve_source_recipe_to_studio(

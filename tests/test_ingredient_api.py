@@ -56,6 +56,17 @@ class IngredientResolverTests(unittest.TestCase):
         self.assertEqual(match.status, "mapped_material")
         self.assertEqual(match.matched_material, "Mahavir")
 
+    def test_material_synonym_resolves_to_canonical_material(self) -> None:
+        resolver = IngredientResolver(self.db, self.catalog, StudioInventory(), MaterialMappings())
+
+        match = resolver.resolve("Edgar Plastic Kaolin", provider="generic")
+        typo_match = resolver.resolve("Esgar Plastic Kaolin", provider="generic")
+
+        self.assertEqual(match.status, "material_synonym")
+        self.assertEqual(match.matched_material, "EPK")
+        self.assertEqual(typo_match.status, "material_synonym")
+        self.assertEqual(typo_match.matched_material, "EPK")
+
     def test_inventory_inspect_shows_studio_material_mapping(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             inventory_path = Path(tmpdir) / "studio_inventory.json"
@@ -140,7 +151,7 @@ class IngredientResolverTests(unittest.TestCase):
 
         self.assertEqual(statuses["Soda Ash"], "exact_material")
         self.assertEqual(statuses["Nepheline Syenite"], "concept_material")
+        self.assertEqual(statuses["Edgar Plastic Kaolin"], "material_synonym")
         self.assertEqual(statuses["Kona F-4 Feldspar"], "unresolved")
-        self.assertEqual(statuses["Edgar Plastic Kaolin"], "unresolved")
         self.assertEqual(statuses["Kentucky Ball Clay (OM 4)"], "unresolved")
         self.assertEqual(statuses["Cedar Heights Redart"], "unresolved")
