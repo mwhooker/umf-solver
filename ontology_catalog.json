@@ -59,6 +59,8 @@
     "Kona F-4 Feldspar": "Soda Feldspar",
     "Neph Sy": "Nepheline Syenite",
     "EPK": "Kaolin",
+    "Ione Kaolin": "Kaolin",
+    "Helmer Kaolin": "Kaolin",
     "Flint": "Silica",
     "Whiting": "Whiting",
     "Iron Oxide, Red": "Red Iron Oxide",
@@ -73,6 +75,7 @@
     "kona f4 feldspar": "Kona F-4 Feldspar"
   },
   "direct_substitution_rules": [
-    {"from_material": "Custer", "to_material": "Mahavir"}
+    {"from_material": "Custer", "to_material": "Mahavir"},
+    {"from_material": "Kona F-4 Feldspar", "to_material": "Minspar"}
   ]
 }

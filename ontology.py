@@ -125,7 +125,13 @@ class OntologyCatalog:
             norm_key(term): normalize(material)
             for term, material in data.get("material_synonyms", {}).items()
         }
-        rules = [DirectSubstitutionRule(**rule) for rule in data.get("direct_substitution_rules", [])]
+        rules = [
+            DirectSubstitutionRule(
+                from_material=normalize(rule["from_material"]),
+                to_material=normalize(rule["to_material"]),
+            )
+            for rule in data.get("direct_substitution_rules", [])
+        ]
         return OntologyCatalog(
             concepts=concepts,
             provider_synonyms=provider_synonyms,

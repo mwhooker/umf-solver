@@ -173,7 +173,113 @@ def cmd_import_recipe(args):
     return 0
 
 
-def resolve_source_recipe_to_studio(
+def render_source_recipe_to_studio(
+    db: OxideDB,
+    catalog: OntologyCatalog,
+    inventory: StudioInventory,
+    mappings: MaterialMappings,
+    recipe: SourceRecipe,
+) -> StudioRecipe:
+    resolver = IngredientResolver(db=db, catalog=catalog, inventory=inventory, mappings=mappings)
+
+    rendered_lines: List[StudioRecipeLine] = []
+    unresolved: List[str] = []
+
+    for line in recipe.lines:
+        match = resolver.resolve(line.original_name, provider=recipe.provider)
+
+        if line.role == "addition":
+            if match.status == "exact_studio_material":
+                rendered_lines.append(
+                    StudioRecipeLine(
+                        name=match.matched_studio_material or line.original_name,
+                        material=match.matched_material or "",
+                        amount=line.amount,
+                        role="addition",
+                        derivation_reason=match.status,
+                    )
+                )
+                continue
+            if match.status in {"exact_material", "material_synonym", "mapped_material", "concept_material"} and match.matched_material is not None:
+                studio_item = choose_unique_studio_material(inventory, match.matched_material)
+                if studio_item is None:
+                    unresolved.append(
+                        f"addition '{line.original_name}' resolves to {match.matched_material} but has no unique studio material"
+                    )
+                    continue
+                rendered_lines.append(
+                    StudioRecipeLine(
+                        name=studio_item.name,
+                        material=studio_item.material,
+                        amount=line.amount,
+                        role="addition",
+                        derivation_reason=match.status,
+                    )
+                )
+                continue
+            unresolved.append(f"addition '{line.original_name}' is not directly resolvable: {match.status}")
+            continue
+
+        if match.status == "exact_studio_material":
+            rendered_lines.append(
+                StudioRecipeLine(
+                    name=match.matched_studio_material or line.original_name,
+                    material=match.matched_material or "",
+                    amount=line.amount,
+                    role="base",
+                    derivation_reason=match.status,
+                )
+            )
+            continue
+
+        if match.status in {"exact_material", "material_synonym", "mapped_material", "concept_material"} and match.matched_material is not None:
+            material = match.matched_material
+            studio_item = choose_unique_studio_material(inventory, material)
+            if studio_item is not None:
+                rendered_lines.append(
+                    StudioRecipeLine(
+                        name=studio_item.name,
+                        material=material,
+                        amount=line.amount,
+                        role="base",
+                        derivation_reason=match.status,
+                    )
+                )
+                continue
+
+            for substitute_material in catalog.direct_substitutes_for(material):
+                studio_substitute = choose_unique_studio_material(inventory, substitute_material)
+                if studio_substitute is not None:
+                    rendered_lines.append(
+                        StudioRecipeLine(
+                            name=studio_substitute.name,
+                            material=substitute_material,
+                            amount=line.amount,
+                            role="base",
+                            derivation_reason=f"direct_substitution:{material}",
+                        )
+                    )
+                    break
+            else:
+                unresolved.append(
+                    f"base '{line.original_name}' resolves to {material} but has no direct studio material or substitution"
+                )
+            continue
+
+        unresolved.append(f"base '{line.original_name}' requires confirmation before resolution: {match.status}")
+
+    if unresolved:
+        die("Cannot resolve source recipe:\n  - " + "\n  - ".join(unresolved))
+
+    return StudioRecipe(
+        name=recipe.name,
+        source=recipe.source,
+        provider=recipe.provider,
+        lines=rendered_lines,
+    )
+
+
+def solve_source_recipe_to_studio(
     db: OxideDB,
     catalog: OntologyCatalog,
     inventory: StudioInventory,
@@ -238,8 +344,6 @@ def resolve_source_recipe_to_studio(
             if studio_item is not None:
                 fixed_base_materials[material] = fixed_base_materials.get(material, 0.0) + line.amount
                 fixed_base_reasons[material] = match.status
-                continue
-
             continue
 
         unresolved.append(f"base '{line.original_name}' requires confirmation before resolution: {match.status}")
@@ -281,19 +385,41 @@ def resolve_source_recipe_to_studio(
             )
         )
 
-    lines = base_lines + addition_lines
     return StudioRecipe(
         name=recipe.name,
         source=recipe.source,
         provider=recipe.provider,
-        lines=lines,
+        lines=base_lines + addition_lines,
     )
 
 
-def cmd_recipe_resolve(args):
+def print_studio_recipe(studio_recipe: StudioRecipe, heading: str) -> None:
+    print(f"{heading}: {studio_recipe.source}")
+    if studio_recipe.name:
+        print(f"Name: {studio_recipe.name}")
+    print("\nStudio recipe:")
+    for line in studio_recipe.lines:
+        print(f"  [{line.role}] {line.name}: {line.amount:.6g} ({line.material}; {line.derivation_reason})")
+
+
+def cmd_recipe_render(args):
     db, catalog, inventory, mappings = load_context(args)
     recipe = SourceRecipe.load(args.source_recipe)
-    studio_recipe = resolve_source_recipe_to_studio(
+    studio_recipe = render_source_recipe_to_studio(
+        db=db,
+        catalog=catalog,
+        inventory=inventory,
+        mappings=mappings,
+        recipe=recipe,
+    )
+    print_studio_recipe(studio_recipe, "Rendered studio recipe from")
+    return 0
+
+
+def cmd_recipe_solve(args):
+    db, catalog, inventory, mappings = load_context(args)
+    recipe = SourceRecipe.load(args.source_recipe)
+    studio_recipe = solve_source_recipe_to_studio(
         db=db,
         catalog=catalog,
         inventory=inventory,
@@ -301,12 +427,7 @@ def cmd_recipe_resolve(args):
         recipe=recipe,
         max_materials=args.max_materials,
     )
-    print(f"Resolved studio recipe from: {studio_recipe.source}")
-    if studio_recipe.name:
-        print(f"Name: {studio_recipe.name}")
-    print("\nStudio recipe:")
-    for line in studio_recipe.lines:
-        print(f"  [{line.role}] {line.name}: {line.amount:.6g} ({line.material}; {line.derivation_reason})")
+    print_studio_recipe(studio_recipe, "Solved studio recipe from")
     return 0
 
 
@@ -366,10 +487,13 @@ def build_parser():
 
     sp = sub.add_parser("recipe", help="Source/studio recipe operations.")
     sub2 = sp.add_subparsers(dest="recipe_cmd", required=True)
-    sp2 = sub2.add_parser("resolve")
+    sp2 = sub2.add_parser("render")
+    sp2.add_argument("source_recipe", type=Path)
+    sp2.set_defaults(func=cmd_recipe_render)
+    sp2 = sub2.add_parser("solve")
     sp2.add_argument("source_recipe", type=Path)
     sp2.add_argument("--max-materials", type=int, default=6)
-    sp2.set_defaults(func=cmd_recipe_resolve)
+    sp2.set_defaults(func=cmd_recipe_solve)
 
     return p
 

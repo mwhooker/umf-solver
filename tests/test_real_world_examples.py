@@ -9,7 +9,7 @@ from importer import import_recipe
 from ontology import OntologyCatalog, SourceRecipe, SourceRecipeLine
 from solver import solve_base_reformulation
 from state import MaterialMappings, StudioInventory
-from umf import resolve_source_recipe_to_studio
+from umf import render_source_recipe_to_studio, solve_source_recipe_to_studio
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -51,7 +51,7 @@ class RealWorldExampleTests(unittest.TestCase):
         inventory.add("Mahavir Feldspar", "Mahavir")
         inventory.add("RIO", "Iron Oxide, Red")
 
-        studio_recipe = resolve_source_recipe_to_studio(
+        studio_recipe = solve_source_recipe_to_studio(
             db=self.db,
             catalog=self.catalog,
             inventory=inventory,
@@ -79,7 +79,30 @@ class RealWorldExampleTests(unittest.TestCase):
         inventory = StudioInventory()
         inventory.add("Minspar Soda Spar", "Minspar")
 
-        studio_recipe = resolve_source_recipe_to_studio(
+        studio_recipe = render_source_recipe_to_studio(
+            db=self.db,
+            catalog=self.catalog,
+            inventory=inventory,
+            mappings=MaterialMappings(),
+            recipe=source_recipe,
+        )
+
+        self.assertEqual(len(studio_recipe.lines), 1)
+        self.assertEqual(studio_recipe.lines[0].material, "Minspar")
+        self.assertEqual(studio_recipe.lines[0].derivation_reason, "direct_substitution:Kona F-4 Feldspar")
+        self.assertAlmostEqual(studio_recipe.lines[0].amount, 100.0, places=6)
+
+    def test_kona_f4_solve_rebalances_to_minspar_when_only_substitute_is_stocked(self) -> None:
+        source_recipe = SourceRecipe(
+            name="Kona F4 Swap",
+            provider="generic",
+            source="test",
+            lines=[SourceRecipeLine("Kona F-4 Feldspar", 100.0, "base", "generic", 0)],
+        )
+        inventory = StudioInventory()
+        inventory.add("Minspar Soda Spar", "Minspar")
+
+        studio_recipe = solve_source_recipe_to_studio(
             db=self.db,
             catalog=self.catalog,
             inventory=inventory,
@@ -103,7 +126,7 @@ class RealWorldExampleTests(unittest.TestCase):
         inventory = StudioInventory()
         inventory.add("Custer Bag", "Custer")
 
-        studio_recipe = resolve_source_recipe_to_studio(
+        studio_recipe = solve_source_recipe_to_studio(
             db=self.db,
             catalog=self.catalog,
             inventory=inventory,
@@ -126,7 +149,7 @@ class RealWorldExampleTests(unittest.TestCase):
         inventory.add("Mahavir Feldspar", "Mahavir")
 
         with self.assertRaises(SystemExit):
-            resolve_source_recipe_to_studio(
+            solve_source_recipe_to_studio(
                 db=self.db,
                 catalog=self.catalog,
                 inventory=inventory,
@@ -156,7 +179,7 @@ class RealWorldExampleTests(unittest.TestCase):
         inventory.add("Whiting 325M", "Whiting")
         inventory.add("RIO", "Iron Oxide, Red")
 
-        studio_recipe = resolve_source_recipe_to_studio(
+        studio_recipe = solve_source_recipe_to_studio(
             db=self.db,
             catalog=self.catalog,
             inventory=inventory,
@@ -195,7 +218,24 @@ class RealWorldExampleTests(unittest.TestCase):
         inventory.add("EPK", "EPK")
 
         with self.assertRaises(SystemExit):
-            resolve_source_recipe_to_studio(
+            render_source_recipe_to_studio(
+                db=self.db,
+                catalog=self.catalog,
+                inventory=inventory,
+                mappings=MaterialMappings(),
+                recipe=recipe,
+            )
+
+    def test_redart_fixture_solve_cannot_resolve_until_missing_canonical_materials_exist(self) -> None:
+        recipe = SourceRecipe.load(ROOT / "recipes" / "redart_test.source.json")
+        inventory = StudioInventory()
+        inventory.add("Soda Ash", "Soda Ash")
+        inventory.add("Kona F-4 Bag", "Kona F-4 Feldspar")
+        inventory.add("Neph Sy", "Neph Sy")
+        inventory.add("EPK", "EPK")
+
+        with self.assertRaises(SystemExit):
+            solve_source_recipe_to_studio(
                 db=self.db,
                 catalog=self.catalog,
                 inventory=inventory,
