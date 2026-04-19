@@ -4,24 +4,15 @@ import re
 import urllib.error
 import urllib.parse
 import urllib.request
-from dataclasses import dataclass
 from html import unescape
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import List, Optional, Tuple
 
+from ontology import SourceRecipe, SourceRecipeLine
 from utils import die, normalize
 
 
 USER_AGENT = "umf-solver/0.1 (+https://github.com/mwhooker/umf-solver)"
-
-
-@dataclass
-class ImportedRecipe:
-    name: Optional[str]
-    base: Dict[str, float]
-    additions: Dict[str, float]
-    source: str
-    provider: str
 
 
 def _looks_like_url(source: str) -> bool:
@@ -50,37 +41,18 @@ def _read_source_text(source: str) -> Tuple[str, str]:
     return path.read_text(encoding="utf-8"), str(path)
 
 
-def _parse_digitalfire_xml(text: str) -> Optional[ImportedRecipe]:
-    if "<recipeline " not in text:
-        return None
-
-    recipe_match = re.search(r'<recipe name="([^"]+)"', text)
-    lines = re.findall(r'<recipeline material="([^"]+)" amount="([^"]+)"\s*/>', text)
-    if not lines:
-        return None
-
-    base: Dict[str, float] = {}
-    for material, amount in lines:
-        base[normalize(unescape(material))] = float(amount)
-    return ImportedRecipe(
-        name=unescape(recipe_match.group(1)) if recipe_match else None,
-        base=base,
-        additions={},
-        source="digitalfire-xml",
-        provider="digitalfire",
-    )
-
-
-def _strip_tags(text: str) -> str:
-    text = re.sub(r"<script\b.*?</script>", "", text, flags=re.IGNORECASE | re.DOTALL)
-    text = re.sub(r"<style\b.*?</style>", "", text, flags=re.IGNORECASE | re.DOTALL)
-    text = re.sub(r"<[^>]+>", "\n", text)
-    return unescape(text)
+def _provider_for_source(label: str) -> str:
+    lowered = label.lower()
+    if "digitalfire" in lowered:
+        return "digitalfire"
+    if "glazy" in lowered:
+        return "glazy"
+    return "generic"
 
 
 def _parse_name(text: str) -> Optional[str]:
-    for line in text.splitlines():
-        line = line.strip()
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
         if not line:
             continue
         if re.match(r"^[+-]?\d+(?:\.\d+)?\s*(?:%|g|grams?)?\s+\S", line, flags=re.IGNORECASE):
@@ -94,21 +66,53 @@ def _parse_name(text: str) -> Optional[str]:
     return None
 
 
-def _parse_recipe_lines(text: str) -> Tuple[Dict[str, float], Dict[str, float]]:
-    base: Dict[str, float] = {}
-    additions: Dict[str, float] = {}
-    target = base
+def _strip_tags(text: str) -> str:
+    text = re.sub(r"<script\b.*?</script>", "", text, flags=re.IGNORECASE | re.DOTALL)
+    text = re.sub(r"<style\b.*?</style>", "", text, flags=re.IGNORECASE | re.DOTALL)
+    text = re.sub(r"<[^>]+>", "\n", text)
+    return unescape(text)
+
+
+def _parse_digitalfire_xml(text: str, source: str) -> Optional[SourceRecipe]:
+    if "<recipeline " not in text:
+        return None
+
+    recipe_match = re.search(r'<recipe name="([^"]+)"', text)
+    lines = re.findall(r'<recipeline material="([^"]+)" amount="([^"]+)"\s*/>', text)
+    if not lines:
+        return None
+
+    source_lines = [
+        SourceRecipeLine(
+            original_name=normalize(unescape(material)),
+            amount=float(amount),
+            role="base",
+            provider="digitalfire",
+            order=index,
+        )
+        for index, (material, amount) in enumerate(lines)
+    ]
+    return SourceRecipe(
+        name=unescape(recipe_match.group(1)) if recipe_match else None,
+        provider="digitalfire",
+        source=source,
+        lines=source_lines,
+    )
+
+
+def _parse_plain_text_lines(text: str, provider: str) -> List[SourceRecipeLine]:
+    lines: List[SourceRecipeLine] = []
+    role = "base"
 
     for raw_line in text.splitlines():
         line = normalize(raw_line)
         if not line:
             continue
-
         lower = line.lower()
         if lower in {"material amount", "ingredient amount", "ingredients", "ingredient"}:
             continue
         if lower in {"added", "additions", "additional ingredients"}:
-            target = additions
+            role = "addition"
             continue
         if lower.startswith("total"):
             continue
@@ -130,21 +134,27 @@ def _parse_recipe_lines(text: str) -> Tuple[Dict[str, float], Dict[str, float]]:
             material = normalize(amount_match.group(1))
             amount = float(amount_match.group(2))
 
-        if material.lower() in {"amount", "percent"}:
+        if material.lower() in {"amount", "percent"} or amount <= 0:
             continue
-        if amount <= 0:
-            continue
-        target[material] = target.get(material, 0.0) + amount
 
-    return base, additions
+        lines.append(
+            SourceRecipeLine(
+                original_name=material,
+                amount=amount,
+                role=role,
+                provider=provider,
+                order=len(lines),
+            )
+        )
+
+    return lines
 
 
-def import_recipe(source: str) -> ImportedRecipe:
+def import_recipe(source: str) -> SourceRecipe:
     text, label = _read_source_text(source)
 
-    digitalfire = _parse_digitalfire_xml(text)
+    digitalfire = _parse_digitalfire_xml(text, label)
     if digitalfire is not None:
-        digitalfire.source = label
         return digitalfire
 
     if "doesn't work properly without JavaScript enabled" in text and "glazy" in label.lower():
@@ -153,26 +163,15 @@ def import_recipe(source: str) -> ImportedRecipe:
             "or save/copy the ingredient text to a local file and import that file instead."
         )
 
+    provider = _provider_for_source(label)
     plain_text = _strip_tags(text) if "<" in text and ">" in text else text
-    base, additions = _parse_recipe_lines(plain_text)
-    if not base and not additions:
+    lines = _parse_plain_text_lines(plain_text, provider)
+    if not lines:
         die(f"Could not find recipe ingredients in {source}")
 
-    return ImportedRecipe(
+    return SourceRecipe(
         name=_parse_name(plain_text),
-        base=base,
-        additions=additions,
+        provider=provider,
         source=label,
-        provider="glazy" if "glazy" in label.lower() else "generic",
+        lines=lines,
     )
-
-
-def write_recipe_csv(path: Path, recipe: ImportedRecipe) -> None:
-    lines: List[str] = ["material,parts"]
-    for material, parts in recipe.base.items():
-        lines.append(f"{material},{parts:g}")
-    if recipe.additions:
-        lines.append("")
-        for material, parts in recipe.additions.items():
-            lines.append(f"{material},{parts:g}")
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")

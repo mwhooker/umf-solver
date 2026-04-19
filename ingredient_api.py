@@ -1,153 +1,129 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Set
+from typing import List, Optional
 
 from db import OxideDB
-from state import AliasState, InventoryState
+from ontology import OntologyCatalog, StudioMaterial
+from state import MaterialMappings, StudioInventory
 from utils import norm_key, normalize
 
 
-PROVIDER_SYNONYMS: Dict[str, Dict[str, List[str]]] = {
-    "generic": {
-        "silica": ["Flint"],
-        "flint": ["Flint"],
-        "kaolin": ["EPK"],
-        "red iron oxide": ["Iron Oxide, Red"],
-        "rio": ["Iron Oxide, Red"],
-        "ferro frit 3134": ["3134 (Frit)"],
-        "ferro frit 3124": ["3124 (Frit)"],
-        "potash feldspar": ["Custer", "Mahavir"],
-        "soda feldspar": ["Minspar"],
-        "nepheline syenite": ["Neph Sy"],
-    },
-    "digitalfire": {
-        "epk": ["EPK"],
-        "custer feldspar": ["Custer"],
-        "ferro frit 3134": ["3134 (Frit)"],
-        "ferro frit 3124": ["3124 (Frit)"],
-        "silica": ["Flint"],
-        "kaolin": ["EPK"],
-        "potash feldspar": ["Custer", "Mahavir"],
-        "soda feldspar": ["Minspar"],
-        "red iron oxide": ["Iron Oxide, Red"],
-    },
-    "glazy": {
-        "silica": ["Flint"],
-        "kaolin": ["EPK"],
-        "potash feldspar": ["Custer", "Mahavir"],
-        "soda feldspar": ["Minspar"],
-        "red iron oxide": ["Iron Oxide, Red"],
-    },
-}
-
-
 @dataclass
-class IngredientMatch:
+class ResolutionResult:
     query: str
-    resolved_name: Optional[str]
+    provider: str
+    matched_concept: Optional[str]
+    matched_material: Optional[str]
+    matched_studio_material: Optional[str]
     status: str
-    source: str
-    candidates: List[str] = field(default_factory=list)
+    candidate_materials: List[str] = field(default_factory=list)
+    reason: str = ""
 
 
 class IngredientResolver:
-    def __init__(self, db: OxideDB, alias: AliasState, inventory: Optional[InventoryState] = None):
+    def __init__(
+        self,
+        db: OxideDB,
+        catalog: OntologyCatalog,
+        inventory: StudioInventory,
+        mappings: MaterialMappings,
+    ):
         self.db = db
-        self.alias = alias
+        self.catalog = catalog
         self.inventory = inventory
+        self.mappings = mappings
 
-    def _inventory_db_names(self) -> Set[str]:
-        if self.inventory is None:
-            return set()
-
-        out: Set[str] = set()
-        for name in self.inventory.base:
-            resolved = self.alias.resolve(name, self.db)
-            if resolved is not None:
-                out.add(resolved)
-        return out
-
-    def _rank_candidates(self, candidates: List[str]) -> List[str]:
-        deduped: List[str] = []
-        seen = set()
-        for candidate in candidates:
-            if candidate in seen or not self.db.has_material(candidate):
-                continue
-            seen.add(candidate)
-            deduped.append(candidate)
-
-        inventory_db = self._inventory_db_names()
-        if not inventory_db:
-            return deduped
-
-        in_inventory = [candidate for candidate in deduped if candidate in inventory_db]
-        not_in_inventory = [candidate for candidate in deduped if candidate not in inventory_db]
-        return in_inventory + not_in_inventory
-
-    def _inventory_unique_candidate(self, candidates: List[str]) -> Optional[str]:
-        inventory_db = self._inventory_db_names()
-        if not inventory_db:
-            return None
-
-        in_inventory = [candidate for candidate in candidates if candidate in inventory_db]
-        if len(in_inventory) == 1:
-            return in_inventory[0]
+    def _find_exact_material(self, query: str) -> Optional[str]:
+        if self.db.has_material(query):
+            return query
+        query_key = norm_key(query)
+        for material in self.db.all_materials():
+            if norm_key(material) == query_key:
+                return material
         return None
 
-    def resolve(self, name: str, provider: str = "generic") -> IngredientMatch:
+    def resolve(self, name: str, provider: str = "generic") -> ResolutionResult:
         query = normalize(name)
         if not query:
-            return IngredientMatch(query=name, resolved_name=None, status="unresolved", source="empty")
+            return ResolutionResult(
+                query=name,
+                provider=provider,
+                matched_concept=None,
+                matched_material=None,
+                matched_studio_material=None,
+                status="unresolved",
+                reason="empty query",
+            )
 
-        direct = self.alias.resolve(query, self.db)
-        if direct is not None:
-            return IngredientMatch(query=query, resolved_name=direct, status="resolved", source="db-or-alias")
+        studio_item = self.inventory.find_by_name(query)
+        if studio_item is not None:
+            return ResolutionResult(
+                query=query,
+                provider=provider,
+                matched_concept=self.catalog.concept_for_material(studio_item.material),
+                matched_material=studio_item.material,
+                matched_studio_material=studio_item.name,
+                status="exact_studio_material",
+                reason="matched studio inventory label",
+            )
 
-        key = norm_key(query)
-        provider_map = PROVIDER_SYNONYMS.get(provider, {})
-        generic_map = PROVIDER_SYNONYMS["generic"]
+        material = self._find_exact_material(query)
+        if material is not None:
+            return ResolutionResult(
+                query=query,
+                provider=provider,
+                matched_concept=self.catalog.concept_for_material(material),
+                matched_material=material,
+                matched_studio_material=None,
+                status="exact_material",
+                reason="matched canonical material name",
+            )
 
-        if key in provider_map:
-            candidates = self._rank_candidates(provider_map[key])
-            inventory_choice = self._inventory_unique_candidate(candidates)
-            if inventory_choice is not None:
-                return IngredientMatch(
+        mapping = self.mappings.get(provider, query)
+        if mapping is not None:
+            return ResolutionResult(
+                query=query,
+                provider=provider,
+                matched_concept=self.catalog.concept_for_material(mapping.material),
+                matched_material=mapping.material,
+                matched_studio_material=None,
+                status="mapped_material",
+                reason="matched explicit studio-confirmed mapping",
+            )
+
+        concept = self.catalog.concept_for_term(provider, query)
+        if concept is not None:
+            candidate_materials = self.catalog.materials_for_concept(concept)
+            if len(candidate_materials) == 1:
+                material = candidate_materials[0]
+                return ResolutionResult(
                     query=query,
-                    resolved_name=inventory_choice,
-                    status="resolved",
-                    source=f"{provider}-inventory",
+                    provider=provider,
+                    matched_concept=concept,
+                    matched_material=material,
+                    matched_studio_material=None,
+                    status="concept_material",
+                    candidate_materials=candidate_materials,
+                    reason="matched ingredient concept with a single canonical material",
                 )
-            if len(candidates) == 1:
-                return IngredientMatch(query=query, resolved_name=candidates[0], status="resolved", source=provider)
-            if len(candidates) > 1:
-                return IngredientMatch(
-                    query=query,
-                    resolved_name=candidates[0] if len(candidates) == 1 else None,
-                    status="ambiguous",
-                    source=provider,
-                    candidates=candidates,
-                )
+            return ResolutionResult(
+                query=query,
+                provider=provider,
+                matched_concept=concept,
+                matched_material=None,
+                matched_studio_material=None,
+                status="ambiguous_concept",
+                candidate_materials=candidate_materials,
+                reason="matched generic ingredient concept",
+            )
 
-        if key in generic_map:
-            candidates = self._rank_candidates(generic_map[key])
-            inventory_choice = self._inventory_unique_candidate(candidates)
-            if inventory_choice is not None:
-                return IngredientMatch(
-                    query=query,
-                    resolved_name=inventory_choice,
-                    status="resolved",
-                    source="generic-inventory",
-                )
-            if len(candidates) == 1:
-                return IngredientMatch(query=query, resolved_name=candidates[0], status="resolved", source="generic")
-            if len(candidates) > 1:
-                return IngredientMatch(
-                    query=query,
-                    resolved_name=None,
-                    status="ambiguous",
-                    source="generic",
-                    candidates=candidates,
-                )
-
-        return IngredientMatch(query=query, resolved_name=None, status="unresolved", source="none")
+        return ResolutionResult(
+            query=query,
+            provider=provider,
+            matched_concept=None,
+            matched_material=None,
+            matched_studio_material=None,
+            status="unresolved",
+            reason="no matching studio material, material, mapping, or concept",
+        )

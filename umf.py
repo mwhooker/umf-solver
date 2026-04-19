@@ -1,460 +1,385 @@
 #!/usr/bin/env python3
-"""
-umf.py — Inventory-managed UMF + substitution solver (MILP w/ slack) for ceramic glazes.
-
-Defaults (relative to this script):
-  - DB:          ./data.csv
-  - State dir:   ./.umf_state/
-  - Aliases:     ./.umf_state/aliases.json
-  - Inventory:   ./.umf_state/inventory.json
-
-Recipe CSV format:
-material,parts
-Custer,77
-Flint,0.1
-Whiting,6.2
-EPK,4.3
-Gerstley Borate,12.4
-
-Dependencies:
-  - pandas
-  - ortools (CBC MILP): pip install ortools
-No yaml/pyyaml required.
-
-New in this version:
-  - substitute: --show-umf prints TARGET / BASELINE / SOLUTION UMF
-  - substitute: --show-groups prints Seger group sums (RO, R2O, R2O3, RO2) and ratios
-  - umf:        --show-groups prints the same for the single recipe
-"""
-
 from __future__ import annotations
 
 import argparse
 from pathlib import Path
-from typing import Dict, Set, Tuple
+from typing import Dict, List, Tuple
 
 from constants import DEFAULT_TARGETS, FLUXES_DEFAULT
 from db import OxideDB
-from ingredient_api import IngredientResolver
-from importer import import_recipe, write_recipe_csv
-from recipe import read_recipe_csv
-from reporting import print_umf_block
-from solver import solve_substitution_milp, split_recipe_fixed_variable
-from state import AliasState, InventoryState
-from utils import die, normalize, norm_key, parse_list, resolve_oxide_list
+from ingredient_api import IngredientResolver, ResolutionResult
+from importer import import_recipe
+from ontology import OntologyCatalog, SourceRecipe, StudioRecipe, StudioRecipeLine
+from solver import solve_base_reformulation
+from state import MaterialMappings, StudioInventory
+from utils import die, normalize
 
-
-# ----------------------------
-# Paths & defaults
-# ----------------------------
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 DEFAULT_DB_PATH = SCRIPT_DIR / "data.csv"
 DEFAULT_STATE_DIR = SCRIPT_DIR / ".umf_state"
-DEFAULT_ALIASES_PATH = DEFAULT_STATE_DIR / "aliases.json"
-DEFAULT_INVENTORY_PATH = DEFAULT_STATE_DIR / "inventory.json"
+DEFAULT_STUDIO_INVENTORY_PATH = DEFAULT_STATE_DIR / "studio_inventory.json"
+DEFAULT_MAPPINGS_PATH = DEFAULT_STATE_DIR / "material_mappings.json"
+DEFAULT_CATALOG_PATH = SCRIPT_DIR / "ontology_catalog.json"
 
 
-# ----------------------------
-# Commands
-# ----------------------------
+def load_context(args) -> Tuple[OxideDB, OntologyCatalog, StudioInventory, MaterialMappings]:
+    db = OxideDB.load(args.db)
+    catalog = OntologyCatalog.load(args.catalog)
+    inventory = StudioInventory.load(args.studio_inventory)
+    mappings = MaterialMappings.load(args.material_mappings)
+    return db, catalog, inventory, mappings
+
+
+def choose_unique_studio_material(inventory: StudioInventory, material: str):
+    matches = inventory.find_by_material(material)
+    if len(matches) == 1:
+        return matches[0]
+    return None
+
+
+def describe_resolution(match: ResolutionResult) -> str:
+    parts = [f"status={match.status}"]
+    if match.matched_concept:
+        parts.append(f"concept={match.matched_concept}")
+    if match.matched_material:
+        parts.append(f"material={match.matched_material}")
+    if match.matched_studio_material:
+        parts.append(f"studio={match.matched_studio_material}")
+    if match.candidate_materials:
+        parts.append("candidates=" + ", ".join(match.candidate_materials))
+    parts.append(f"reason={match.reason}")
+    return "; ".join(parts)
+
 
 def cmd_db_check(args):
     db = OxideDB.load(args.db)
     print(f"DB: {args.db}")
     print(f"  materials: {len(db.all_materials())}")
     print(f"  oxides:    {len(db.oxides)}")
-    print("  MW sanity:")
-    for ox in ["SiO2", "Al2O3", "Na2O", "K2O", "CaO", "B2O3"]:
-        if ox in db.mw:
-            print(f"    {ox}: {db.mw[ox]}")
-    return 0
-
-
-def cmd_alias_set(args):
-    db = OxideDB.load(args.db)
-    alias = AliasState.load(args.aliases)
-
-    user_name = normalize(args.user_name)
-    db_name = normalize(args.db_name)
-
-    # Validate db_name exists (try fallback normalization)
-    if not db.has_material(db_name):
-        nk = norm_key(db_name)
-        found = None
-        for m in db.all_materials():
-            if norm_key(m) == nk:
-                found = m
-                break
-        if found is None:
-            die(f"DB material not found: '{db_name}'")
-        db_name = found
-
-    alias.aliases[user_name] = db_name
-    alias.save(args.aliases)
-    print(f"Alias set: '{user_name}' -> '{db_name}'")
-    print(f"Saved: {args.aliases}")
-    return 0
-
-
-def cmd_alias_list(args):
-    alias = AliasState.load(args.aliases)
-    if not alias.aliases:
-        print("(no aliases)")
-        return 0
-    for k in sorted(alias.aliases.keys()):
-        print(f"{k} -> {alias.aliases[k]}")
     return 0
 
 
 def cmd_inventory_add(args):
-    db = OxideDB.load(args.db)
-    alias = AliasState.load(args.aliases)
-    inv = InventoryState.load(args.inventory)
-
-    name = normalize(args.material)
-    resolved = alias.resolve(name, db)
-
-    if resolved is None and not args.allow_unresolved:
-        die(f"Material '{name}' doesn't resolve to DB. Add an alias first or use --allow-unresolved.")
-
-    inv.base.add(name)
-    kind = "base"
-
-    inv.save(args.inventory)
-    print(f"Added ({kind}): {name}")
-    print(f"Saved: {args.inventory}")
+    db, _catalog, inventory, _mappings = load_context(args)
+    material = normalize(args.material)
+    if not db.has_material(material):
+        die(f"Canonical material not found in DB: {material}")
+    inventory.add(args.studio_name, material, notes=args.notes or "")
+    inventory.save(args.studio_inventory)
+    print(f"Added studio material: {args.studio_name} -> {material}")
+    print(f"Saved: {args.studio_inventory}")
     return 0
 
 
 def cmd_inventory_remove(args):
-    inv = InventoryState.load(args.inventory)
-    name = normalize(args.material)
-    existed = False
-    if name in inv.base:
-        inv.base.remove(name)
-        existed = True
-    if not existed:
-        print(f"(not in inventory) {name}")
+    _db, _catalog, inventory, _mappings = load_context(args)
+    if not inventory.remove(args.studio_name):
+        print(f"(not in studio inventory) {args.studio_name}")
         return 0
-    inv.save(args.inventory)
-    print(f"Removed: {name}")
+    inventory.save(args.studio_inventory)
+    print(f"Removed studio material: {args.studio_name}")
     return 0
 
 
 def cmd_inventory_list(args):
-    inv = InventoryState.load(args.inventory)
-    print("Base:")
-    for m in sorted(inv.base):
-        print(f"  - {m}")
+    _db, _catalog, inventory, _mappings = load_context(args)
+    for item in sorted(inventory.items, key=lambda item: item.name.lower()):
+        print(item.name)
     return 0
 
 
-def cmd_inventory_report(args):
-    db = OxideDB.load(args.db)
-    alias = AliasState.load(args.aliases)
-    inv = InventoryState.load(args.inventory)
+def cmd_inventory_inspect(args):
+    _db, _catalog, inventory, _mappings = load_context(args)
+    for item in sorted(inventory.items, key=lambda item: item.name.lower()):
+        print(item.name)
+        print(f"  material: {item.material}")
+        if item.notes:
+            print(f"  notes: {item.notes}")
+    return 0
 
-    def report(title: str, items: Set[str]):
-        ok, bad = [], []
-        for u in sorted(items):
-            r = alias.resolve(u, db)
-            if r is None:
-                bad.append(u)
-            else:
-                ok.append((u, r))
-        print(title)
-        for u, r in ok:
-            print(f"  OK: '{u}' -> '{r}'")
-        for u in bad:
-            print(f"  MISSING: '{u}' (add alias)")
-        print("")
 
-    report("Base materials:", inv.base)
+def cmd_mapping_set(args):
+    db, _catalog, _inventory, mappings = load_context(args)
+    material = normalize(args.material)
+    if not db.has_material(material):
+        die(f"Canonical material not found in DB: {material}")
+    mappings.set(args.provider, args.source_term, material)
+    mappings.save(args.material_mappings)
+    print(f"Mapping set: ({args.provider}) {args.source_term} -> {material}")
+    print(f"Saved: {args.material_mappings}")
+    return 0
+
+
+def cmd_mapping_list(args):
+    _db, _catalog, _inventory, mappings = load_context(args)
+    for item in sorted(mappings.items, key=lambda item: (item.provider, item.source_term.lower())):
+        print(f"{item.provider}: {item.source_term} -> {item.material}")
+    return 0
+
+
+def cmd_mapping_remove(args):
+    _db, _catalog, _inventory, mappings = load_context(args)
+    if not mappings.remove(args.provider, args.source_term):
+        print(f"(not mapped) ({args.provider}) {args.source_term}")
+        return 0
+    mappings.save(args.material_mappings)
+    print(f"Removed mapping: ({args.provider}) {args.source_term}")
     return 0
 
 
 def cmd_ingredient_resolve(args):
-    db = OxideDB.load(args.db)
-    alias = AliasState.load(args.aliases)
-    inv = InventoryState.load(args.inventory)
-    resolver = IngredientResolver(db=db, alias=alias, inventory=inv)
-
+    db, catalog, inventory, mappings = load_context(args)
+    resolver = IngredientResolver(db=db, catalog=catalog, inventory=inventory, mappings=mappings)
     for raw_name in args.ingredients:
         match = resolver.resolve(raw_name, provider=args.provider)
         print(f"{match.query}:")
         print(f"  status: {match.status}")
-        if match.resolved_name is not None:
-            print(f"  resolved: {match.resolved_name}")
-        print(f"  source: {match.source}")
-        if match.candidates:
-            print(f"  candidates: {', '.join(match.candidates)}")
-
+        if match.matched_concept:
+            print(f"  concept: {match.matched_concept}")
+        if match.matched_material:
+            print(f"  material: {match.matched_material}")
+        if match.matched_studio_material:
+            print(f"  studio material: {match.matched_studio_material}")
+        if match.candidate_materials:
+            print(f"  candidates: {', '.join(match.candidate_materials)}")
+        print(f"  reason: {match.reason}")
     return 0
+
+
+def print_source_recipe(recipe: SourceRecipe) -> None:
+    print(f"Imported recipe from: {recipe.source}")
+    if recipe.name:
+        print(f"Name: {recipe.name}")
+    print(f"Provider: {recipe.provider}")
+    print("\nSource recipe lines:")
+    for line in recipe.lines:
+        print(f"  [{line.role}] {line.original_name}: {line.amount:.6g}")
 
 
 def cmd_import_recipe(args):
-    db = OxideDB.load(args.db)
-    alias = AliasState.load(args.aliases)
-    inv = InventoryState.load(args.inventory)
-    resolver = IngredientResolver(db=db, alias=alias, inventory=inv)
-
-    imported = import_recipe(args.source)
-
-    print(f"Imported recipe from: {imported.source}")
-    if imported.name:
-        print(f"Name: {imported.name}")
-
-    alias_updates = 0
-
-    def show_resolution_block(title: str, items: Dict[str, float]) -> None:
-        nonlocal alias_updates
-        print(f"\n{title}:")
-        for material, parts in items.items():
-            match = resolver.resolve(material, provider=imported.provider)
-            if match.status == "resolved":
-                print(f"  {material}: {parts:.6g} [{match.resolved_name} via {match.source}]")
-                if args.write_aliases and match.resolved_name is not None and normalize(material) != match.resolved_name:
-                    alias.aliases[normalize(material)] = match.resolved_name
-                    alias_updates += 1
-            elif match.status == "ambiguous":
-                print(f"  {material}: {parts:.6g} [AMBIGUOUS: {', '.join(match.candidates)}]")
-            else:
-                print(f"  {material}: {parts:.6g} [UNRESOLVED]")
-
-    show_resolution_block("Base ingredients", imported.base)
-    if imported.additions:
-        show_resolution_block("Additional ingredients", imported.additions)
-
+    db, catalog, inventory, mappings = load_context(args)
+    resolver = IngredientResolver(db=db, catalog=catalog, inventory=inventory, mappings=mappings)
+    recipe = import_recipe(args.source)
+    print_source_recipe(recipe)
+    print("\nResolution analysis:")
+    for line in recipe.lines:
+        match = resolver.resolve(line.original_name, provider=recipe.provider)
+        print(f"  [{line.role}] {line.original_name}: {line.amount:.6g}")
+        print(f"    {describe_resolution(match)}")
     if args.save_recipe is not None:
-        write_recipe_csv(args.save_recipe, imported)
-        print(f"\nSaved recipe CSV: {args.save_recipe}")
-
-    if args.add_to_inventory:
-        imported_materials = list(imported.base.keys()) + list(imported.additions.keys())
-        for material in imported_materials:
-            inv.base.add(normalize(material))
-        inv.save(args.inventory)
-        print(f"Added {len(imported_materials)} ingredient(s) to inventory.")
-        print(f"Saved: {args.inventory}")
-
-    if args.write_aliases and alias_updates:
-        alias.save(args.aliases)
-        print(f"Saved {alias_updates} alias mapping(s): {args.aliases}")
-
+        recipe.save(args.save_recipe)
+        print(f"\nSaved source recipe: {args.save_recipe}")
     return 0
 
 
-def cmd_umf(args):
-    db = OxideDB.load(args.db)
-    alias = AliasState.load(args.aliases)
+def resolve_source_recipe_to_studio(
+    db: OxideDB,
+    catalog: OntologyCatalog,
+    inventory: StudioInventory,
+    mappings: MaterialMappings,
+    recipe: SourceRecipe,
+    max_materials: int,
+) -> StudioRecipe:
+    resolver = IngredientResolver(db=db, catalog=catalog, inventory=inventory, mappings=mappings)
 
-    base_user, colorant_user = read_recipe_csv(args.recipe)
-    recipe_user = dict(base_user)
-    for k, v in colorant_user.items():
-        recipe_user[k] = recipe_user.get(k, 0.0) + v
+    target_base_materials: Dict[str, float] = {}
+    fixed_base_materials: Dict[str, float] = {}
+    fixed_base_reasons: Dict[str, str] = {}
+    addition_lines: List[StudioRecipeLine] = []
+    unresolved: List[str] = []
 
-    # Resolve recipe to DB names
-    recipe_db: Dict[str, float] = {}
-    for u, p in recipe_user.items():
-        r = alias.resolve(u, db)
-        if r is None:
-            die(f"Recipe material not found: '{u}' (add alias or use exact DB name)")
-        recipe_db[r] = recipe_db.get(r, 0.0) + p
+    for line in recipe.lines:
+        match = resolver.resolve(line.original_name, provider=recipe.provider)
 
-    print("Resolved recipe (DB names):")
-    for m in sorted(recipe_db.keys()):
-        print(f"  {m}: {recipe_db[m]:.6g}")
+        if line.role == "addition":
+            if match.status == "exact_studio_material":
+                addition_lines.append(
+                    StudioRecipeLine(
+                        name=match.matched_studio_material or line.original_name,
+                        material=match.matched_material or "",
+                        amount=line.amount,
+                        role="addition",
+                        derivation_reason=match.status,
+                    )
+                )
+                continue
+            if match.status in {"exact_material", "mapped_material", "concept_material"} and match.matched_material is not None:
+                studio_item = choose_unique_studio_material(inventory, match.matched_material)
+                if studio_item is None:
+                    unresolved.append(
+                        f"addition '{line.original_name}' resolves to {match.matched_material} but has no unique studio material"
+                    )
+                    continue
+                addition_lines.append(
+                    StudioRecipeLine(
+                        name=studio_item.name,
+                        material=studio_item.material,
+                        amount=line.amount,
+                        role="addition",
+                        derivation_reason=match.status,
+                    )
+                )
+                continue
+            unresolved.append(f"addition '{line.original_name}' is not directly resolvable: {match.status}")
+            continue
 
-    flux_raw = parse_list(args.fluxes) if args.fluxes else FLUXES_DEFAULT
-    fluxes = resolve_oxide_list(flux_raw, db, allow_r2o=False)
+        if match.status == "exact_studio_material":
+            material = match.matched_material or ""
+            target_base_materials[material] = target_base_materials.get(material, 0.0) + line.amount
+            fixed_base_materials[material] = fixed_base_materials.get(material, 0.0) + line.amount
+            fixed_base_reasons[material] = match.status
+            continue
 
-    print_umf_block(db, recipe_db, fluxes, "UMF", show_groups=args.show_groups)
-    return 0
+        if match.status in {"exact_material", "mapped_material", "concept_material"} and match.matched_material is not None:
+            material = match.matched_material
+            target_base_materials[material] = target_base_materials.get(material, 0.0) + line.amount
+            studio_item = choose_unique_studio_material(inventory, material)
+            if studio_item is not None:
+                fixed_base_materials[material] = fixed_base_materials.get(material, 0.0) + line.amount
+                fixed_base_reasons[material] = match.status
+                continue
 
+            direct_substitute_chosen = False
+            for substitute_material in catalog.direct_substitutes_for(material):
+                studio_substitute = choose_unique_studio_material(inventory, substitute_material)
+                if studio_substitute is not None:
+                    fixed_base_materials[substitute_material] = fixed_base_materials.get(substitute_material, 0.0) + line.amount
+                    fixed_base_reasons[substitute_material] = f"direct_substitution:{material}"
+                    direct_substitute_chosen = True
+                    break
+            if direct_substitute_chosen:
+                continue
+            continue
 
-def cmd_substitute(args):
-    db = OxideDB.load(args.db)
-    alias = AliasState.load(args.aliases)
-    inv = InventoryState.load(args.inventory)
+        unresolved.append(f"base '{line.original_name}' requires confirmation before resolution: {match.status}")
 
-    base_user, colorant_user = read_recipe_csv(args.recipe)
+    if unresolved:
+        die("Cannot resolve source recipe:\n  - " + "\n  - ".join(unresolved))
 
-    ban = parse_list(args.ban) if args.ban else []
-    baseline_swap = None
-    if args.baseline_swap:
-        if "=" not in args.baseline_swap:
-            die("--baseline-swap must look like 'A=B'")
-        left, right = args.baseline_swap.split("=", 1)
-        baseline_swap = (normalize(left), normalize(right))
-
-    target_raw = parse_list(args.targets) if args.targets else DEFAULT_TARGETS
-    targets = resolve_oxide_list(target_raw, db, allow_r2o=True)
-
-    flux_raw = parse_list(args.fluxes) if args.fluxes else FLUXES_DEFAULT
-    fluxes = resolve_oxide_list(flux_raw, db, allow_r2o=False)
-
-    want_umf = bool(args.show_umf or args.show_groups)
-
-    fixed_db, variable_db, _fixed_total, _var_total = split_recipe_fixed_variable(
-        db=db,
-        alias=alias,
-        base_user=base_user,
-        colorant_user=colorant_user,
+    addition_materials = {line.material for line in addition_lines}
+    available_materials = sorted(
+        {
+            item.material
+            for item in inventory.items
+            if item.material not in addition_materials or item.material in fixed_base_materials
+        }
     )
 
-    # Full recipe for TARGET UMF (fixed + variable)
-    recipe_db_full = dict(fixed_db)
-    for k, v in variable_db.items():
-        recipe_db_full[k] = recipe_db_full.get(k, 0.0) + v
-
-    if want_umf:
-        print_umf_block(db, recipe_db_full, fluxes, "TARGET UMF (original recipe)", show_groups=args.show_groups)
-
-        # Baseline is variable-only with swap applied, then combined with fixed colorants
-        baseline_var = dict(variable_db)
-        if baseline_swap is not None:
-            left_user, right_user = baseline_swap
-            left_db = alias.resolve(left_user, db) or left_user
-            right_db = alias.resolve(right_user, db) or right_user
-            moved = baseline_var.get(left_db, 0.0)
-            baseline_var[left_db] = 0.0
-            baseline_var[right_db] = baseline_var.get(right_db, 0.0) + moved
-
-        baseline_full = dict(fixed_db)
-        for k, v in baseline_var.items():
-            baseline_full[k] = baseline_full.get(k, 0.0) + v
-
-        print_umf_block(db, baseline_full, fluxes, "BASELINE UMF (after swap)", show_groups=args.show_groups)
-
-    sol = solve_substitution_milp(
+    solved_base = solve_base_reformulation(
         db=db,
-        alias=alias,
-        inv=inv,
-        fixed_db=fixed_db,
-        variable_db=variable_db,
-        ban_user_names=ban,
-        baseline_swap=baseline_swap,
-        max_materials=int(args.max_materials),
-        targets=targets,
-        fluxes=fluxes,
+        target_base_materials=target_base_materials,
+        fixed_base_materials=fixed_base_materials,
+        available_materials=available_materials,
+        max_materials=max_materials,
+        targets=DEFAULT_TARGETS,
+        fluxes=FLUXES_DEFAULT,
     )
 
-    print("\nSubstitution result (DB names):")
-    total = sum(sol.values())
-    for m in sorted(sol.keys()):
-        print(f"  {m}: {sol[m]:.4f}")
-    print(f"  TOTAL: {total:.4f}")
+    base_lines: List[StudioRecipeLine] = []
+    for material, amount in sorted(solved_base.items()):
+        studio_item = choose_unique_studio_material(inventory, material)
+        if studio_item is None:
+            die(f"Resolved material {material} does not have a unique studio material entry.")
+        base_lines.append(
+            StudioRecipeLine(
+                name=studio_item.name,
+                material=material,
+                amount=amount,
+                role="base",
+                derivation_reason=fixed_base_reasons.get(material, "umf_reformulation"),
+            )
+        )
 
-    if want_umf:
-        print_umf_block(db, sol, fluxes, "SOLUTION UMF (optimized)", show_groups=args.show_groups)
+    lines = base_lines + addition_lines
+    return StudioRecipe(
+        name=recipe.name,
+        source=recipe.source,
+        provider=recipe.provider,
+        lines=lines,
+    )
 
+
+def cmd_recipe_resolve(args):
+    db, catalog, inventory, mappings = load_context(args)
+    recipe = SourceRecipe.load(args.source_recipe)
+    studio_recipe = resolve_source_recipe_to_studio(
+        db=db,
+        catalog=catalog,
+        inventory=inventory,
+        mappings=mappings,
+        recipe=recipe,
+        max_materials=args.max_materials,
+    )
+    print(f"Resolved studio recipe from: {studio_recipe.source}")
+    if studio_recipe.name:
+        print(f"Name: {studio_recipe.name}")
+    print("\nStudio recipe:")
+    for line in studio_recipe.lines:
+        print(f"  [{line.role}] {line.name}: {line.amount:.6g} ({line.material}; {line.derivation_reason})")
     return 0
 
-
-# ----------------------------
-# CLI
-# ----------------------------
 
 def build_parser():
-    p = argparse.ArgumentParser(prog="umf.py", add_help=True)
-
-    p.add_argument("--db", type=Path, default=DEFAULT_DB_PATH,
-                   help=f"Path to DB CSV (default: {DEFAULT_DB_PATH})")
-    p.add_argument("--state-dir", type=Path, default=DEFAULT_STATE_DIR,
-                   help=f"State directory (default: {DEFAULT_STATE_DIR})")
-    p.add_argument("--aliases", type=Path, default=None,
-                   help="Aliases JSON path (default: <state-dir>/aliases.json)")
-    p.add_argument("--inventory", type=Path, default=None,
-                   help="Inventory JSON path (default: <state-dir>/inventory.json)")
+    p = argparse.ArgumentParser(prog="umf", add_help=True)
+    p.add_argument("--db", type=Path, default=DEFAULT_DB_PATH)
+    p.add_argument("--catalog", type=Path, default=DEFAULT_CATALOG_PATH)
+    p.add_argument("--state-dir", type=Path, default=DEFAULT_STATE_DIR)
+    p.add_argument("--studio-inventory", type=Path, default=None)
+    p.add_argument("--material-mappings", type=Path, default=None)
 
     sub = p.add_subparsers(dest="cmd", required=True)
 
-    sp = sub.add_parser("db-check", help="Load DB and print basic info.")
+    sp = sub.add_parser("db-check")
     sp.set_defaults(func=cmd_db_check)
 
-    # alias
-    sp = sub.add_parser("alias", help="Manage aliases.")
-    sub2 = sp.add_subparsers(dest="alias_cmd", required=True)
-
-    sp2 = sub2.add_parser("set", help="Set an alias: user_name -> db_name")
-    sp2.add_argument("user_name")
-    sp2.add_argument("db_name")
-    sp2.set_defaults(func=cmd_alias_set)
-
-    sp2 = sub2.add_parser("list", help="List aliases")
-    sp2.set_defaults(func=cmd_alias_list)
-
-    # inventory
-    sp = sub.add_parser("inventory", help="Manage persistent inventory.")
-    sub2 = sp.add_subparsers(dest="inv_cmd", required=True)
-
-    sp2 = sub2.add_parser("add", help="Add a material to inventory base.")
-    sp2.add_argument("material")
-    sp2.add_argument("--allow-unresolved", action="store_true", help="Allow adding even if no DB/alias match yet.")
+    sp = sub.add_parser("inventory", help="Manage studio inventory.")
+    sub2 = sp.add_subparsers(dest="inventory_cmd", required=True)
+    sp2 = sub2.add_parser("add")
+    sp2.add_argument("studio_name")
+    sp2.add_argument("--material", required=True)
+    sp2.add_argument("--notes", default="")
     sp2.set_defaults(func=cmd_inventory_add)
-
-    sp2 = sub2.add_parser("remove", help="Remove a material from inventory.")
-    sp2.add_argument("material")
+    sp2 = sub2.add_parser("remove")
+    sp2.add_argument("studio_name")
     sp2.set_defaults(func=cmd_inventory_remove)
-
-    sp2 = sub2.add_parser("list", help="List inventory.")
+    sp2 = sub2.add_parser("list")
     sp2.set_defaults(func=cmd_inventory_list)
+    sp2 = sub2.add_parser("inspect")
+    sp2.set_defaults(func=cmd_inventory_inspect)
 
-    sp2 = sub2.add_parser("report", help="Report resolution vs DB.")
-    sp2.set_defaults(func=cmd_inventory_report)
+    sp = sub.add_parser("mapping", help="Manage confirmed source-term material mappings.")
+    sub2 = sp.add_subparsers(dest="mapping_cmd", required=True)
+    sp2 = sub2.add_parser("set")
+    sp2.add_argument("--provider", choices=["generic", "digitalfire", "glazy"], required=True)
+    sp2.add_argument("source_term")
+    sp2.add_argument("material")
+    sp2.set_defaults(func=cmd_mapping_set)
+    sp2 = sub2.add_parser("list")
+    sp2.set_defaults(func=cmd_mapping_list)
+    sp2 = sub2.add_parser("remove")
+    sp2.add_argument("--provider", choices=["generic", "digitalfire", "glazy"], required=True)
+    sp2.add_argument("source_term")
+    sp2.set_defaults(func=cmd_mapping_remove)
 
-    # ingredient
     sp = sub.add_parser("ingredient", help="Ingredient lookup and resolution helpers.")
     sub2 = sp.add_subparsers(dest="ingredient_cmd", required=True)
-
-    sp2 = sub2.add_parser("resolve", help="Resolve ingredient names against DB, aliases, and provider synonyms.")
-    sp2.add_argument("ingredients", nargs="+", help="One or more ingredient names to resolve")
-    sp2.add_argument(
-        "--provider",
-        choices=["generic", "digitalfire", "glazy"],
-        default="generic",
-        help="Provider-specific synonym set to apply during resolution",
-    )
+    sp2 = sub2.add_parser("resolve")
+    sp2.add_argument("ingredients", nargs="+")
+    sp2.add_argument("--provider", choices=["generic", "digitalfire", "glazy"], default="generic")
     sp2.set_defaults(func=cmd_ingredient_resolve)
 
-    # import
-    sp = sub.add_parser("import-recipe", help="Import a recipe from a URL or local file.")
-    sp.add_argument("source", help="Digitalfire URL, local export file, or local text/html file")
-    sp.add_argument("--save-recipe", type=Path, default=None, help="Write imported recipe as CSV")
-    sp.add_argument(
-        "--write-aliases",
-        action="store_true",
-        help="Persist unambiguous imported ingredient mappings into aliases.json",
-    )
-    sp.add_argument(
-        "--add-to-inventory",
-        action="store_true",
-        help="Add imported ingredient names to persistent inventory without requiring DB resolution",
-    )
+    sp = sub.add_parser("import-recipe", help="Import a source recipe from a URL or file.")
+    sp.add_argument("source")
+    sp.add_argument("--save-recipe", type=Path, default=None)
     sp.set_defaults(func=cmd_import_recipe)
 
-    # umf
-    sp = sub.add_parser("umf", help="Compute UMF for a recipe CSV.")
-    sp.add_argument("--recipe", type=Path, required=True)
-    sp.add_argument("--fluxes", default=",".join(FLUXES_DEFAULT), help="Comma list of flux oxides")
-    sp.add_argument("--show-groups", action="store_true",
-                    help="Print Seger group sums (RO, R2O, R2O3, RO2) and ratios")
-    sp.set_defaults(func=cmd_umf)
-
-    # substitute
-    sp = sub.add_parser("substitute", help="Solve substitution MILP using inventory base materials.")
-    sp.add_argument("--recipe", type=Path, required=True)
-    sp.add_argument("--ban", default="", help="Comma list of unavailable materials (user or DB names)")
-    sp.add_argument("--baseline-swap", default="", help="Baseline swap like 'Custer=Mahavir Feldspar'")
-    sp.add_argument("--max-materials", default="6", help="Max number of materials in output recipe")
-    sp.add_argument("--targets", default=",".join(DEFAULT_TARGETS), help="UMF targets to match with slack")
-    sp.add_argument("--fluxes", default=",".join(FLUXES_DEFAULT), help="Comma list of flux oxides")
-    sp.add_argument("--show-umf", action="store_true",
-                    help="Print target, baseline, and solution UMF blocks")
-    sp.add_argument("--show-groups", action="store_true",
-                    help="Also print Seger group sums (RO, R2O, R2O3, RO2) and ratios within UMF blocks")
-    sp.set_defaults(func=cmd_substitute)
+    sp = sub.add_parser("recipe", help="Source/studio recipe operations.")
+    sub2 = sp.add_subparsers(dest="recipe_cmd", required=True)
+    sp2 = sub2.add_parser("resolve")
+    sp2.add_argument("source_recipe", type=Path)
+    sp2.add_argument("--max-materials", type=int, default=6)
+    sp2.set_defaults(func=cmd_recipe_resolve)
 
     return p
 
@@ -462,20 +387,10 @@ def build_parser():
 def main():
     parser = build_parser()
     args = parser.parse_args()
-
-    # Fill default state paths from state-dir if not explicitly provided
     state_dir: Path = args.state_dir
-    aliases_path: Path = args.aliases or (state_dir / "aliases.json")
-    inventory_path: Path = args.inventory or (state_dir / "inventory.json")
-
-    # Attach resolved paths to args for downstream commands
-    args.db = args.db
-    args.aliases = aliases_path
-    args.inventory = inventory_path
-
-    # Ensure state dir exists (lazy-create files on save)
+    args.studio_inventory = args.studio_inventory or (state_dir / "studio_inventory.json")
+    args.material_mappings = args.material_mappings or (state_dir / "material_mappings.json")
     state_dir.mkdir(parents=True, exist_ok=True)
-
     return args.func(args)
 
 

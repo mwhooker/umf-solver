@@ -1,0 +1,72 @@
+{
+  "concepts": [
+    {"name": "Potash Feldspar"},
+    {"name": "Soda Feldspar"},
+    {"name": "Nepheline Syenite"},
+    {"name": "Kaolin"},
+    {"name": "Silica"},
+    {"name": "Whiting"},
+    {"name": "Red Iron Oxide"},
+    {"name": "Wollastonite"},
+    {"name": "Gerstley Borate"},
+    {"name": "Frit 3134"},
+    {"name": "Frit 3124"}
+  ],
+  "provider_synonyms": {
+    "generic": {
+      "potash feldspar": "Potash Feldspar",
+      "soda feldspar": "Soda Feldspar",
+      "nepheline syenite": "Nepheline Syenite",
+      "kaolin": "Kaolin",
+      "silica": "Silica",
+      "flint": "Silica",
+      "whiting": "Whiting",
+      "red iron oxide": "Red Iron Oxide",
+      "rio": "Red Iron Oxide",
+      "wollastonite": "Wollastonite",
+      "gerstley borate": "Gerstley Borate",
+      "ferro frit 3134": "Frit 3134",
+      "ferro frit 3124": "Frit 3124"
+    },
+    "digitalfire": {
+      "custer feldspar": "Potash Feldspar",
+      "mahavir feldspar": "Potash Feldspar",
+      "minspar soda spar": "Soda Feldspar",
+      "epk": "Kaolin",
+      "silica": "Silica",
+      "kaolin": "Kaolin",
+      "whiting": "Whiting",
+      "red iron oxide": "Red Iron Oxide",
+      "ferro frit 3134": "Frit 3134",
+      "ferro frit 3124": "Frit 3124",
+      "wollastonite": "Wollastonite",
+      "gerstley borate": "Gerstley Borate"
+    },
+    "glazy": {
+      "potash feldspar": "Potash Feldspar",
+      "soda feldspar": "Soda Feldspar",
+      "nepheline syenite": "Nepheline Syenite",
+      "kaolin": "Kaolin",
+      "silica": "Silica",
+      "whiting": "Whiting",
+      "red iron oxide": "Red Iron Oxide"
+    }
+  },
+  "material_concepts": {
+    "Custer": "Potash Feldspar",
+    "Mahavir": "Potash Feldspar",
+    "Minspar": "Soda Feldspar",
+    "Neph Sy": "Nepheline Syenite",
+    "EPK": "Kaolin",
+    "Flint": "Silica",
+    "Whiting": "Whiting",
+    "Iron Oxide, Red": "Red Iron Oxide",
+    "Wollastonite": "Wollastonite",
+    "Gerstley Borate": "Gerstley Borate",
+    "3134 (Frit)": "Frit 3134",
+    "3124 (Frit)": "Frit 3124"
+  },
+  "direct_substitution_rules": [
+    {"from_material": "Custer", "to_material": "Mahavir"}
+  ]
+}
