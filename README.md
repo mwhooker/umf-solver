@@ -31,7 +31,20 @@ To pull imported ingredient names into your inventory as-is:
 uv run umf import-recipe /path/to/recipe.txt --add-to-inventory
 ```
 
+To persist unambiguous imported ingredient mappings into your aliases:
+
+```bash
+uv run umf import-recipe https://digitalfire.com/recipe/g1214m --write-aliases
+```
+
 Note: direct `glazy.org` recipe URLs are JavaScript-driven, so import those by saving/exporting the recipe text locally first.
+
+Imported ingredients are resolved through a small ingredient API layer that combines:
+
+- exact DB names
+- your saved aliases
+- provider-specific synonyms (e.g. Digitalfire/Glazy naming)
+- inventory-aware disambiguation for generic names like `Potash Feldspar`
 
 ## Dependencies
 

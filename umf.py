@@ -35,6 +35,7 @@ from typing import Dict, Set, Tuple
 
 from constants import DEFAULT_TARGETS, FLUXES_DEFAULT
 from db import OxideDB
+from ingredient_api import IngredientResolver
 from importer import import_recipe, write_recipe_csv
 from recipe import read_recipe_csv
 from reporting import print_umf_block
@@ -177,6 +178,7 @@ def cmd_import_recipe(args):
     db = OxideDB.load(args.db)
     alias = AliasState.load(args.aliases)
     inv = InventoryState.load(args.inventory)
+    resolver = IngredientResolver(db=db, alias=alias, inventory=inv)
 
     imported = import_recipe(args.source)
 
@@ -184,18 +186,26 @@ def cmd_import_recipe(args):
     if imported.name:
         print(f"Name: {imported.name}")
 
-    print("\nBase ingredients:")
-    for material, parts in imported.base.items():
-        resolved = alias.resolve(material, db)
-        status = resolved if resolved is not None else "UNRESOLVED"
-        print(f"  {material}: {parts:.6g} [{status}]")
+    alias_updates = 0
 
+    def show_resolution_block(title: str, items: Dict[str, float]) -> None:
+        nonlocal alias_updates
+        print(f"\n{title}:")
+        for material, parts in items.items():
+            match = resolver.resolve(material, provider=imported.provider)
+            if match.status == "resolved":
+                print(f"  {material}: {parts:.6g} [{match.resolved_name} via {match.source}]")
+                if args.write_aliases and match.resolved_name is not None and normalize(material) != match.resolved_name:
+                    alias.aliases[normalize(material)] = match.resolved_name
+                    alias_updates += 1
+            elif match.status == "ambiguous":
+                print(f"  {material}: {parts:.6g} [AMBIGUOUS: {', '.join(match.candidates)}]")
+            else:
+                print(f"  {material}: {parts:.6g} [UNRESOLVED]")
+
+    show_resolution_block("Base ingredients", imported.base)
     if imported.additions:
-        print("\nAdditional ingredients:")
-        for material, parts in imported.additions.items():
-            resolved = alias.resolve(material, db)
-            status = resolved if resolved is not None else "UNRESOLVED"
-            print(f"  {material}: {parts:.6g} [{status}]")
+        show_resolution_block("Additional ingredients", imported.additions)
 
     if args.save_recipe is not None:
         write_recipe_csv(args.save_recipe, imported)
@@ -208,6 +218,10 @@ def cmd_import_recipe(args):
         inv.save(args.inventory)
         print(f"Added {len(imported_materials)} ingredient(s) to inventory.")
         print(f"Saved: {args.inventory}")
+
+    if args.write_aliases and alias_updates:
+        alias.save(args.aliases)
+        print(f"Saved {alias_updates} alias mapping(s): {args.aliases}")
 
     return 0
 
@@ -375,6 +389,11 @@ def build_parser():
     sp = sub.add_parser("import-recipe", help="Import a recipe from a URL or local file.")
     sp.add_argument("source", help="Digitalfire URL, local export file, or local text/html file")
     sp.add_argument("--save-recipe", type=Path, default=None, help="Write imported recipe as CSV")
+    sp.add_argument(
+        "--write-aliases",
+        action="store_true",
+        help="Persist unambiguous imported ingredient mappings into aliases.json",
+    )
     sp.add_argument(
         "--add-to-inventory",
         action="store_true",

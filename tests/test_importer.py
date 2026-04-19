@@ -58,6 +58,7 @@ class ImporterTests(unittest.TestCase):
             imported = import_recipe(str(path))
 
         self.assertEqual(imported.name, "20x5 Cone 6 Base Glossy Glaze")
+        self.assertEqual(imported.provider, "digitalfire")
         self.assertEqual(imported.base["Wollastonite"], 20.0)
         self.assertEqual(imported.base["Ferro Frit 3134"], 20.0)
         self.assertEqual(imported.base["Custer Feldspar"], 20.0)
@@ -71,6 +72,7 @@ class ImporterTests(unittest.TestCase):
             imported = import_recipe(str(path))
 
         self.assertEqual(imported.name, "Leach 4321 Celadon")
+        self.assertEqual(imported.provider, "glazy")
         self.assertEqual(imported.base["Potash Feldspar"], 40.0)
         self.assertEqual(imported.base["Silica"], 30.0)
         self.assertEqual(imported.additions["Red Iron Oxide"], 1.0)

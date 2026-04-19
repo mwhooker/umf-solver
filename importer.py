@@ -21,6 +21,7 @@ class ImportedRecipe:
     base: Dict[str, float]
     additions: Dict[str, float]
     source: str
+    provider: str
 
 
 def _looks_like_url(source: str) -> bool:
@@ -66,6 +67,7 @@ def _parse_digitalfire_xml(text: str) -> Optional[ImportedRecipe]:
         base=base,
         additions={},
         source="digitalfire-xml",
+        provider="digitalfire",
     )
 
 
@@ -161,6 +163,7 @@ def import_recipe(source: str) -> ImportedRecipe:
         base=base,
         additions=additions,
         source=label,
+        provider="glazy" if "glazy" in label.lower() else "generic",
     )
 
 
