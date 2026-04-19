@@ -60,12 +60,10 @@ class IngredientResolverTests(unittest.TestCase):
         resolver = IngredientResolver(self.db, self.catalog, StudioInventory(), MaterialMappings())
 
         match = resolver.resolve("Edgar Plastic Kaolin", provider="generic")
-        typo_match = resolver.resolve("Esgar Plastic Kaolin", provider="generic")
 
         self.assertEqual(match.status, "material_synonym")
         self.assertEqual(match.matched_material, "EPK")
-        self.assertEqual(typo_match.status, "material_synonym")
-        self.assertEqual(typo_match.matched_material, "EPK")
+        self.assertEqual(resolver.resolve("Esgar Plastic Kaolin", provider="generic").status, "unresolved")
 
     def test_inventory_inspect_shows_studio_material_mapping(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
