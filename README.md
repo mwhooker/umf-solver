@@ -31,10 +31,10 @@ uv run umf inventory inspect
 
 ## Confirmed mappings
 
-Generic imported terms do not silently collapse to a specific material. If you want a provider-specific source term to resolve to one material in your studio, confirm it explicitly:
+Generic imported terms do not silently collapse to a specific material. If you want a source term to resolve to one material in your studio, confirm it explicitly:
 
 ```bash
-uv run umf mapping set --provider glazy "Potash Feldspar" Mahavir
+uv run umf mapping set "Potash Feldspar" Mahavir
 uv run umf mapping list
 ```
 

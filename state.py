@@ -66,30 +66,27 @@ class MaterialMappings:
         data = {"items": [item.__dict__ for item in self.items]}
         path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
 
-    def get(self, provider: str, source_term: str) -> Optional[MaterialMapping]:
-        provider = normalize(provider)
+    def get(self, source_term: str) -> Optional[MaterialMapping]:
         target = norm_key(source_term)
         for item in self.items:
-            if item.provider == provider and norm_key(item.source_term) == target:
+            if norm_key(item.source_term) == target:
                 return item
         return None
 
-    def set(self, provider: str, source_term: str, material: str) -> None:
-        provider = normalize(provider)
+    def set(self, source_term: str, material: str) -> None:
         source_term = normalize(source_term)
         material = normalize(material)
-        existing = self.get(provider, source_term)
+        existing = self.get(source_term)
         if existing is not None:
             existing.material = material
             return
-        self.items.append(MaterialMapping(provider=provider, source_term=source_term, material=material))
+        self.items.append(MaterialMapping(source_term=source_term, material=material))
 
-    def remove(self, provider: str, source_term: str) -> bool:
-        provider = normalize(provider)
+    def remove(self, source_term: str) -> bool:
         target = norm_key(source_term)
         before = len(self.items)
         self.items = [
             item for item in self.items
-            if not (item.provider == provider and norm_key(item.source_term) == target)
+            if norm_key(item.source_term) != target
         ]
         return len(self.items) != before

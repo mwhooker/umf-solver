@@ -92,7 +92,7 @@ class IngredientResolver:
                 reason="matched canonical material synonym",
             )
 
-        mapping = self.mappings.get(provider, query)
+        mapping = self.mappings.get(query)
         if mapping is not None:
             return ResolutionResult(
                 query=query,

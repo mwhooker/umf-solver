@@ -108,27 +108,27 @@ def cmd_mapping_set(args):
     material = normalize(args.material)
     if not db.has_material(material):
         die(f"Canonical material not found in DB: {material}")
-    mappings.set(args.provider, args.source_term, material)
+    mappings.set(args.source_term, material)
     mappings.save(args.material_mappings)
-    print(f"Mapping set: ({args.provider}) {args.source_term} -> {material}")
+    print(f"Mapping set: {args.source_term} -> {material}")
     print(f"Saved: {args.material_mappings}")
     return 0
 
 
 def cmd_mapping_list(args):
     _db, _catalog, _inventory, mappings = load_context(args)
-    for item in sorted(mappings.items, key=lambda item: (item.provider, item.source_term.lower())):
-        print(f"{item.provider}: {item.source_term} -> {item.material}")
+    for item in sorted(mappings.items, key=lambda item: item.source_term.lower()):
+        print(f"{item.source_term} -> {item.material}")
     return 0
 
 
 def cmd_mapping_remove(args):
     _db, _catalog, _inventory, mappings = load_context(args)
-    if not mappings.remove(args.provider, args.source_term):
-        print(f"(not mapped) ({args.provider}) {args.source_term}")
+    if not mappings.remove(args.source_term):
+        print(f"(not mapped) {args.source_term}")
         return 0
     mappings.save(args.material_mappings)
-    print(f"Removed mapping: ({args.provider}) {args.source_term}")
+    print(f"Removed mapping: {args.source_term}")
     return 0
 
 
@@ -637,14 +637,12 @@ def build_parser():
     sp = sub.add_parser("mapping", help="Manage confirmed source-term material mappings.")
     sub2 = sp.add_subparsers(dest="mapping_cmd", required=True)
     sp2 = sub2.add_parser("set")
-    sp2.add_argument("--provider", choices=["generic", "digitalfire", "glazy"], required=True)
     sp2.add_argument("source_term")
     sp2.add_argument("material")
     sp2.set_defaults(func=cmd_mapping_set)
     sp2 = sub2.add_parser("list")
     sp2.set_defaults(func=cmd_mapping_list)
     sp2 = sub2.add_parser("remove")
-    sp2.add_argument("--provider", choices=["generic", "digitalfire", "glazy"], required=True)
     sp2.add_argument("source_term")
     sp2.set_defaults(func=cmd_mapping_remove)
 

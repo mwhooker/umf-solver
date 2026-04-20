@@ -80,7 +80,6 @@ class StudioRecipe:
 
 @dataclass
 class MaterialMapping:
-    provider: str
     source_term: str
     material: str
 

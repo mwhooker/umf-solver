@@ -48,7 +48,7 @@ class IngredientResolverTests(unittest.TestCase):
 
     def test_mapping_set_makes_resolution_deterministic(self) -> None:
         mappings = MaterialMappings()
-        mappings.set("glazy", "Potash Feldspar", "Mahavir")
+        mappings.set("Potash Feldspar", "Mahavir")
         resolver = IngredientResolver(self.db, self.catalog, StudioInventory(), mappings)
 
         match = resolver.resolve("Potash Feldspar", provider="glazy")
@@ -103,7 +103,6 @@ class IngredientResolverTests(unittest.TestCase):
                 catalog=ROOT / "ontology_catalog.json",
                 studio_inventory=inventory_path,
                 material_mappings=mappings_path,
-                provider="glazy",
                 source_term="Potash Feldspar",
                 material="Mahavir",
             )
