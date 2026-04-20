@@ -72,7 +72,12 @@
   "material_synonyms": {
     "edgar plastic kaolin": "EPK",
     "f-4 feldspar": "Kona F-4 Feldspar",
-    "kona f4 feldspar": "Kona F-4 Feldspar"
+    "kona f4 feldspar": "Kona F-4 Feldspar",
+    "nepheline syenite": "Neph Sy",
+    "kentucky ball clay (om 4)": "OM4",
+    "om 4": "OM4",
+    "cedar heights redart": "Red Art",
+    "redart": "Red Art"
   },
   "direct_substitution_rules": [
     {"from_material": "Custer", "to_material": "Mahavir"},

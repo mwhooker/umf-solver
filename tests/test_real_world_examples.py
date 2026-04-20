@@ -9,7 +9,7 @@ from importer import import_recipe
 from ontology import OntologyCatalog, SourceRecipe, SourceRecipeLine
 from solver import solve_base_reformulation
 from state import MaterialMappings, StudioInventory
-from umf import render_source_recipe_to_studio, solve_source_recipe_to_studio
+from umf import render_source_recipe_to_studio, solve_source_recipe_to_studio, source_recipe_materials
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -231,6 +231,82 @@ class RealWorldExampleTests(unittest.TestCase):
         self.assertNotAlmostEqual(base_amounts["Soda Ash"], 17.27, places=2)
         self.assertNotAlmostEqual(base_amounts["Minspar"], 9.82, places=2)
         self.assertAlmostEqual(sum(base_amounts.values()), 100.0, places=6)
+
+    def test_render_can_force_material_substitution(self) -> None:
+        source_recipe = SourceRecipe(
+            name="Forced kaolin",
+            provider="generic",
+            source="test",
+            lines=[SourceRecipeLine("Edgar Plastic Kaolin", 18.18, "base", "generic", 0)],
+        )
+        inventory = StudioInventory()
+        inventory.add("EPK", "EPK")
+        inventory.add("Ione", "Ione Kaolin")
+
+        studio_recipe = render_source_recipe_to_studio(
+            db=self.db,
+            catalog=self.catalog,
+            inventory=inventory,
+            mappings=MaterialMappings(),
+            recipe=source_recipe,
+            substitutions={"EPK": "Ione Kaolin"},
+        )
+
+        self.assertEqual(len(studio_recipe.lines), 1)
+        self.assertEqual(studio_recipe.lines[0].material, "Ione Kaolin")
+        self.assertEqual(studio_recipe.lines[0].derivation_reason, "forced_substitution:EPK")
+
+    def test_solve_can_force_material_substitution(self) -> None:
+        source_recipe = SourceRecipe(
+            name="Forced kaolin",
+            provider="generic",
+            source="test",
+            lines=[
+                SourceRecipeLine("Soda Ash", 17.27, "base", "generic", 0),
+                SourceRecipeLine("Kona F-4 Feldspar", 9.82, "base", "generic", 1),
+                SourceRecipeLine("Nepheline Syenite", 40.91, "base", "generic", 2),
+                SourceRecipeLine("Edgar Plastic Kaolin", 18.18, "base", "generic", 3),
+                SourceRecipeLine("OM4", 13.82, "base", "generic", 4),
+            ],
+        )
+        inventory = StudioInventory()
+        inventory.add("Soda Ash", "Soda Ash")
+        inventory.add("Minspar", "Minspar")
+        inventory.add("Nepheline Syenite", "Neph Sy")
+        inventory.add("EPK", "EPK")
+        inventory.add("Ione", "Ione Kaolin")
+        inventory.add("OM4", "OM4")
+
+        studio_recipe = solve_source_recipe_to_studio(
+            db=self.db,
+            catalog=self.catalog,
+            inventory=inventory,
+            mappings=MaterialMappings(),
+            recipe=source_recipe,
+            max_materials=6,
+            substitutions={"EPK": "Ione Kaolin"},
+        )
+
+        base_amounts = {line.material: line.amount for line in studio_recipe.lines if line.role == "base"}
+        self.assertIn("Ione Kaolin", base_amounts)
+        self.assertNotIn("EPK", base_amounts)
+
+    def test_source_recipe_materials_can_compute_imported_recipe_umf_inputs(self) -> None:
+        recipe = SourceRecipe.load(ROOT / "recipes" / "md-shino.json")
+        materials, unresolved = source_recipe_materials(
+            db=self.db,
+            catalog=self.catalog,
+            mappings=MaterialMappings.load(ROOT / ".umf_state" / "material_mappings.json"),
+            recipe=recipe,
+        )
+
+        self.assertEqual(unresolved, [])
+        self.assertAlmostEqual(materials["Soda Ash"], 17.27, places=6)
+        self.assertAlmostEqual(materials["Kona F-4 Feldspar"], 9.82, places=6)
+        self.assertAlmostEqual(materials["Neph Sy"], 40.91, places=6)
+        self.assertAlmostEqual(materials["EPK"], 18.18, places=6)
+        self.assertAlmostEqual(materials["OM4"], 13.82, places=6)
+        self.assertAlmostEqual(materials["Red Art"], 6.0, places=6)
 
     def test_solver_preserves_base_mass(self) -> None:
         solved = solve_base_reformulation(

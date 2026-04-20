@@ -21,6 +21,10 @@ DEFAULT_STATE_DIR = SCRIPT_DIR / ".umf_state"
 DEFAULT_STUDIO_INVENTORY_PATH = DEFAULT_STATE_DIR / "studio_inventory.json"
 DEFAULT_MAPPINGS_PATH = DEFAULT_STATE_DIR / "material_mappings.json"
 DEFAULT_CATALOG_PATH = SCRIPT_DIR / "ontology_catalog.json"
+SEGER_RO = ["MgO", "CaO", "SrO", "BaO", "ZnO"]
+SEGER_R2O = ["Li2O", "Na2O", "K2O"]
+SEGER_R2O3 = ["Al2O3", "B2O3", "Fe2O3"]
+SEGER_RO2 = ["SiO2", "TiO2"]
 
 
 def load_context(args) -> Tuple[OxideDB, OntologyCatalog, StudioInventory, MaterialMappings]:
@@ -164,6 +168,138 @@ def load_source_recipe(source: Path | str) -> SourceRecipe:
     return import_recipe(str(path))
 
 
+def parse_substitutions(
+    db: OxideDB,
+    catalog: OntologyCatalog,
+    mappings: MaterialMappings,
+    substitutions: List[str] | None,
+) -> Dict[str, str]:
+    if not substitutions:
+        return {}
+
+    resolver = IngredientResolver(db=db, catalog=catalog, inventory=StudioInventory(), mappings=mappings)
+    parsed: Dict[str, str] = {}
+    for raw in substitutions:
+        if "=" not in raw:
+            die(f"Invalid substitution '{raw}'. Use FROM=TO.")
+        left_raw, right_raw = raw.split("=", 1)
+        left = resolver.resolve(left_raw, provider="generic")
+        right = resolver.resolve(right_raw, provider="generic")
+        if left.matched_material is None:
+            die(f"Substitution source does not resolve to a canonical material: {left_raw}")
+        if right.matched_material is None:
+            die(f"Substitution target does not resolve to a canonical material: {right_raw}")
+        parsed[left.matched_material] = right.matched_material
+    return parsed
+
+
+def recipe_materials(studio_recipe: StudioRecipe, role: str = "base") -> Dict[str, float]:
+    materials: Dict[str, float] = {}
+    for line in studio_recipe.lines:
+        if line.role != role:
+            continue
+        materials[line.material] = materials.get(line.material, 0.0) + line.amount
+    return materials
+
+
+def umf_table_rows(db: OxideDB, recipe_db_names: Dict[str, float]) -> Tuple[List[Tuple[str, float, float]], float]:
+    moles = db.oxide_moles_from_recipe(recipe_db_names)
+    umf, flux_moles = db.umf_from_moles(moles, FLUXES_DEFAULT)
+    oxide_order = list(FLUXES_DEFAULT) + [ox for ox in db.oxides if ox not in FLUXES_DEFAULT]
+    rows: List[Tuple[str, float, float]] = []
+    for oxide in oxide_order:
+        if oxide in moles or oxide in umf:
+            rows.append((oxide, float(moles.get(oxide, 0.0)), float(umf.get(oxide, 0.0))))
+    return rows, flux_moles
+
+
+def seger_group_sums(umf: Dict[str, float]) -> Dict[str, float]:
+    return {
+        "RO": sum(umf.get(oxide, 0.0) for oxide in SEGER_RO),
+        "R2O": sum(umf.get(oxide, 0.0) for oxide in SEGER_R2O),
+        "R2O3": sum(umf.get(oxide, 0.0) for oxide in SEGER_R2O3),
+        "RO2": sum(umf.get(oxide, 0.0) for oxide in SEGER_RO2),
+    }
+
+
+def safe_div(numerator: float, denominator: float) -> float:
+    if abs(denominator) <= 1e-12:
+        return float("nan")
+    return numerator / denominator
+
+
+def print_flux_ratios(rows: List[Tuple[str, float, float]]) -> None:
+    umf = {oxide: value for oxide, _moles, value in rows}
+    groups = seger_group_sums(umf)
+    flux_total = groups["RO"] + groups["R2O"]
+
+    print("\nSeger groups:")
+    print("group\tvalue")
+    print(f"RO\t{groups['RO']:.6f}")
+    print(f"R2O\t{groups['R2O']:.6f}")
+    print(f"R2O3\t{groups['R2O3']:.6f}")
+    print(f"RO2\t{groups['RO2']:.6f}")
+    print(f"Flux\t{flux_total:.6f}")
+
+    print("\nFlux ratios:")
+    print("ratio\tvalue")
+    print(f"RO/R2O\t{safe_div(groups['RO'], groups['R2O']):.6f}")
+    print(f"(RO+R2O)/R2O3\t{safe_div(flux_total, groups['R2O3']):.6f}")
+    print(f"RO2/R2O3\t{safe_div(groups['RO2'], groups['R2O3']):.6f}")
+    print(f"RO2/(RO+R2O)\t{safe_div(groups['RO2'], flux_total):.6f}")
+
+
+def print_umf_table(db: OxideDB, studio_recipe: StudioRecipe) -> None:
+    base_recipe = recipe_materials(studio_recipe, role="base")
+    if not base_recipe:
+        return
+    rows, flux_moles = umf_table_rows(db, base_recipe)
+    print("\nBase UMF (additions excluded):")
+    print("oxide\tmoles\tumf")
+    for oxide, moles, umf in rows:
+        print(f"{oxide}\t{moles:.6f}\t{umf:.6f}")
+    print(f"FluxTotal\t{flux_moles:.6f}")
+    print_flux_ratios(rows)
+
+
+def source_recipe_materials(
+    db: OxideDB,
+    catalog: OntologyCatalog,
+    mappings: MaterialMappings,
+    recipe: SourceRecipe,
+) -> Tuple[Dict[str, float], List[str]]:
+    resolver = IngredientResolver(db=db, catalog=catalog, inventory=StudioInventory(), mappings=mappings)
+    materials: Dict[str, float] = {}
+    unresolved: List[str] = []
+
+    for line in recipe.lines:
+        match = resolver.resolve(line.original_name, provider=recipe.provider)
+        if match.status in {"exact_material", "material_synonym", "mapped_material", "concept_material"} and match.matched_material is not None:
+            materials[match.matched_material] = materials.get(match.matched_material, 0.0) + line.amount
+            continue
+        unresolved.append(f"[{line.role}] {line.original_name}: {match.status}")
+
+    return materials, unresolved
+
+
+def print_source_umf_table(
+    db: OxideDB,
+    catalog: OntologyCatalog,
+    mappings: MaterialMappings,
+    recipe: SourceRecipe,
+) -> None:
+    materials, unresolved = source_recipe_materials(db, catalog, mappings, recipe)
+    if unresolved:
+        die("Cannot compute source UMF:\n  - " + "\n  - ".join(unresolved))
+    rows, flux_moles = umf_table_rows(db, materials)
+    print("\nSource UMF:")
+    print("oxide\tmoles\tumf")
+    for oxide, moles, umf in rows:
+        print(f"{oxide}\t{moles:.6f}\t{umf:.6f}")
+    print(f"FluxTotal\t{flux_moles:.6f}")
+    print_flux_ratios(rows)
+
+
 def cmd_import_recipe(args):
     db, catalog, inventory, mappings = load_context(args)
     resolver = IngredientResolver(db=db, catalog=catalog, inventory=inventory, mappings=mappings)
@@ -186,8 +322,10 @@ def render_source_recipe_to_studio(
     inventory: StudioInventory,
     mappings: MaterialMappings,
     recipe: SourceRecipe,
+    substitutions: Dict[str, str] | None = None,
 ) -> StudioRecipe:
     resolver = IngredientResolver(db=db, catalog=catalog, inventory=inventory, mappings=mappings)
+    substitutions = substitutions or {}
 
     rendered_lines: List[StudioRecipeLine] = []
     unresolved: List[str] = []
@@ -240,7 +378,7 @@ def render_source_recipe_to_studio(
             continue
 
         if match.status in {"exact_material", "material_synonym", "mapped_material", "concept_material"} and match.matched_material is not None:
-            material = match.matched_material
+            material = substitutions.get(match.matched_material, match.matched_material)
             studio_item = choose_unique_studio_material(inventory, material)
             if studio_item is not None:
                 rendered_lines.append(
@@ -249,7 +387,11 @@ def render_source_recipe_to_studio(
                         material=material,
                         amount=line.amount,
                         role="base",
-                        derivation_reason=match.status,
+                        derivation_reason=(
+                            f"forced_substitution:{match.matched_material}"
+                            if material != match.matched_material
+                            else match.status
+                        ),
                     )
                 )
                 continue
@@ -293,14 +435,17 @@ def solve_source_recipe_to_studio(
     mappings: MaterialMappings,
     recipe: SourceRecipe,
     max_materials: int,
+    substitutions: Dict[str, str] | None = None,
 ) -> StudioRecipe:
     resolver = IngredientResolver(db=db, catalog=catalog, inventory=inventory, mappings=mappings)
+    substitutions = substitutions or {}
 
     target_base_materials: Dict[str, float] = {}
     fixed_base_materials: Dict[str, float] = {}
     fixed_base_reasons: Dict[str, str] = {}
     addition_lines: List[StudioRecipeLine] = []
     unresolved: List[str] = []
+    banned_base_materials = set(substitutions.keys())
 
     for line in recipe.lines:
         match = resolver.resolve(line.original_name, provider=recipe.provider)
@@ -340,13 +485,15 @@ def solve_source_recipe_to_studio(
         if match.status == "exact_studio_material":
             material = match.matched_material or ""
             target_base_materials[material] = target_base_materials.get(material, 0.0) + line.amount
+            if material in substitutions:
+                continue
             continue
 
         if match.status in {"exact_material", "material_synonym", "mapped_material", "concept_material"} and match.matched_material is not None:
             material = match.matched_material
             target_base_materials[material] = target_base_materials.get(material, 0.0) + line.amount
             studio_item = choose_unique_studio_material(inventory, material)
-            if studio_item is not None:
+            if studio_item is not None and material not in banned_base_materials:
                 fixed_base_reasons[material] = fixed_base_reasons.get(material, match.status)
             continue
 
@@ -360,7 +507,8 @@ def solve_source_recipe_to_studio(
         {
             item.material
             for item in inventory.items
-            if item.material not in addition_materials or item.material in fixed_base_materials
+            if (item.material not in addition_materials or item.material in fixed_base_materials)
+            and item.material not in banned_base_materials
         }
     )
 
@@ -409,20 +557,40 @@ def print_studio_recipe(studio_recipe: StudioRecipe, heading: str) -> None:
 def cmd_recipe_render(args):
     db, catalog, inventory, mappings = load_context(args)
     recipe = load_source_recipe(args.source_recipe)
+    substitutions = parse_substitutions(db, catalog, mappings, args.substitute)
     studio_recipe = render_source_recipe_to_studio(
         db=db,
         catalog=catalog,
         inventory=inventory,
         mappings=mappings,
         recipe=recipe,
+        substitutions=substitutions,
     )
     print_studio_recipe(studio_recipe, "Rendered studio recipe from")
+    if args.show_umf:
+        print_umf_table(db, studio_recipe)
+    return 0
+
+
+def cmd_recipe_inspect(args):
+    db, catalog, _inventory, mappings = load_context(args)
+    recipe = load_source_recipe(args.source_recipe)
+    print_source_recipe(recipe)
+    resolver = IngredientResolver(db=db, catalog=catalog, inventory=StudioInventory(), mappings=mappings)
+    print("\nResolution analysis:")
+    for line in recipe.lines:
+        match = resolver.resolve(line.original_name, provider=recipe.provider)
+        print(f"  [{line.role}] {line.original_name}: {line.amount:.6g}")
+        print(f"    {describe_resolution(match)}")
+    if args.show_umf:
+        print_source_umf_table(db, catalog, mappings, recipe)
     return 0
 
 
 def cmd_recipe_solve(args):
     db, catalog, inventory, mappings = load_context(args)
     recipe = load_source_recipe(args.source_recipe)
+    substitutions = parse_substitutions(db, catalog, mappings, args.substitute)
     studio_recipe = solve_source_recipe_to_studio(
         db=db,
         catalog=catalog,
@@ -430,8 +598,11 @@ def cmd_recipe_solve(args):
         mappings=mappings,
         recipe=recipe,
         max_materials=args.max_materials,
+        substitutions=substitutions,
     )
     print_studio_recipe(studio_recipe, "Solved studio recipe from")
+    if args.show_umf:
+        print_umf_table(db, studio_recipe)
     return 0
 
 
@@ -491,12 +662,20 @@ def build_parser():
 
     sp = sub.add_parser("recipe", help="Source/studio recipe operations.")
     sub2 = sp.add_subparsers(dest="recipe_cmd", required=True)
+    sp2 = sub2.add_parser("inspect")
+    sp2.add_argument("source_recipe", type=Path)
+    sp2.add_argument("--show-umf", action="store_true")
+    sp2.set_defaults(func=cmd_recipe_inspect)
     sp2 = sub2.add_parser("render")
     sp2.add_argument("source_recipe", type=Path)
+    sp2.add_argument("--show-umf", action="store_true")
+    sp2.add_argument("--substitute", action="append", default=None)
     sp2.set_defaults(func=cmd_recipe_render)
     sp2 = sub2.add_parser("solve")
     sp2.add_argument("source_recipe", type=Path)
     sp2.add_argument("--max-materials", type=int, default=6)
+    sp2.add_argument("--show-umf", action="store_true")
+    sp2.add_argument("--substitute", action="append", default=None)
     sp2.set_defaults(func=cmd_recipe_solve)
 
     return p

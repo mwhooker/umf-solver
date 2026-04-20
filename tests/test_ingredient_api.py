@@ -152,7 +152,7 @@ class IngredientResolverTests(unittest.TestCase):
 
         self.assertEqual(statuses["Soda Ash"], "exact_material")
         self.assertEqual(statuses["Kona F-4 Feldspar"], "exact_material")
-        self.assertEqual(statuses["Nepheline Syenite"], "concept_material")
+        self.assertEqual(statuses["Nepheline Syenite"], "material_synonym")
         self.assertEqual(statuses["Edgar Plastic Kaolin"], "material_synonym")
-        self.assertEqual(statuses["Kentucky Ball Clay (OM 4)"], "unresolved")
-        self.assertEqual(statuses["Cedar Heights Redart"], "unresolved")
+        self.assertEqual(statuses["Kentucky Ball Clay (OM 4)"], "material_synonym")
+        self.assertEqual(statuses["Cedar Heights Redart"], "material_synonym")
