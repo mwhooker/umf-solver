@@ -9,7 +9,13 @@ from importer import import_recipe
 from ontology import OntologyCatalog, SourceRecipe, SourceRecipeLine
 from solver import solve_base_reformulation
 from state import MaterialMappings, StudioInventory
-from umf import render_source_recipe_to_studio, solve_source_recipe_to_studio, source_recipe_materials, scale_recipe_lines
+from umf import (
+    parse_batch_quantity,
+    render_source_recipe_to_studio,
+    scale_recipe_lines,
+    solve_source_recipe_to_studio,
+    source_recipe_materials,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -280,6 +286,11 @@ class RealWorldExampleTests(unittest.TestCase):
         amounts = {line.material: amount for line, amount in scaled}
         self.assertAlmostEqual(amounts["Soda Ash"], 1000.0, places=6)
         self.assertAlmostEqual(amounts["Red Art"], 60.0, places=6)
+
+    def test_parse_batch_quantity_accepts_compact_and_spaced_units(self) -> None:
+        self.assertEqual(parse_batch_quantity("100oz"), (100.0, "oz"))
+        self.assertEqual(parse_batch_quantity("100 oz"), (100.0, "oz"))
+        self.assertEqual(parse_batch_quantity("1.5kg"), (1.5, "kg"))
 
     def test_solve_can_force_material_substitution(self) -> None:
         source_recipe = SourceRecipe(

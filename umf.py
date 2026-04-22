@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import re
 from pathlib import Path
 from typing import Dict, List, Tuple
 
@@ -213,6 +214,20 @@ def normalize_unit(unit: str) -> str:
     if key not in UNIT_ALIASES:
         die(f"Unsupported batch unit: {unit}")
     return UNIT_ALIASES[key]
+
+
+def parse_batch_quantity(raw: str | None) -> Tuple[float | None, str | None]:
+    if raw is None:
+        return None, None
+    text = raw.strip()
+    match = re.fullmatch(r"([+-]?\d+(?:\.\d+)?)\s*([A-Za-z]+)", text)
+    if match is None:
+        die(f"Invalid batch quantity '{raw}'. Use forms like 100g, 100 oz, 2lb, or 1.5kg.")
+    amount = float(match.group(1))
+    if amount <= 0:
+        die("Batch quantity must be greater than zero.")
+    unit = normalize_unit(match.group(2))
+    return amount, unit
 
 
 def scale_recipe_lines(
@@ -610,8 +625,8 @@ def cmd_recipe_render(args):
         recipe=recipe,
         substitutions=substitutions,
     )
-    batch_unit = normalize_unit(args.batch_unit) if args.batch is not None else None
-    print_studio_recipe(studio_recipe, "Rendered studio recipe from", batch_amount=args.batch, batch_unit=batch_unit)
+    batch_amount, batch_unit = parse_batch_quantity(args.batch)
+    print_studio_recipe(studio_recipe, "Rendered studio recipe from", batch_amount=batch_amount, batch_unit=batch_unit)
     if args.show_umf:
         print_umf_table(db, studio_recipe)
     return 0
@@ -645,8 +660,8 @@ def cmd_recipe_solve(args):
         max_materials=args.max_materials,
         substitutions=substitutions,
     )
-    batch_unit = normalize_unit(args.batch_unit) if args.batch is not None else None
-    print_studio_recipe(studio_recipe, "Solved studio recipe from", batch_amount=args.batch, batch_unit=batch_unit)
+    batch_amount, batch_unit = parse_batch_quantity(args.batch)
+    print_studio_recipe(studio_recipe, "Solved studio recipe from", batch_amount=batch_amount, batch_unit=batch_unit)
     if args.show_umf:
         print_umf_table(db, studio_recipe)
     return 0
@@ -714,16 +729,14 @@ def build_parser():
     sp2.add_argument("source_recipe", type=Path)
     sp2.add_argument("--show-umf", action="store_true")
     sp2.add_argument("--substitute", action="append", default=None)
-    sp2.add_argument("--batch", type=float, default=None)
-    sp2.add_argument("--batch-unit", default="g")
+    sp2.add_argument("--batch", default=None)
     sp2.set_defaults(func=cmd_recipe_render)
     sp2 = sub2.add_parser("solve")
     sp2.add_argument("source_recipe", type=Path)
     sp2.add_argument("--max-materials", type=int, default=6)
     sp2.add_argument("--show-umf", action="store_true")
     sp2.add_argument("--substitute", action="append", default=None)
-    sp2.add_argument("--batch", type=float, default=None)
-    sp2.add_argument("--batch-unit", default="g")
+    sp2.add_argument("--batch", default=None)
     sp2.set_defaults(func=cmd_recipe_solve)
 
     return p
