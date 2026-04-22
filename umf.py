@@ -610,7 +610,7 @@ def print_studio_recipe(
     print("\nStudio recipe:")
     for line, display_amount in scale_recipe_lines(studio_recipe, batch_amount):
         suffix = batch_unit if batch_unit is not None else "parts"
-        print(f"  [{line.role}] {line.name}: {display_amount:.6g} {suffix} ({line.material}; {line.derivation_reason})")
+        print(f"  [{line.role}] {line.name}: {display_amount:.2f} {suffix} ({line.material}; {line.derivation_reason})")
 
 
 def cmd_recipe_render(args):

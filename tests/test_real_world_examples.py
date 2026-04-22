@@ -1,16 +1,19 @@
 import json
 import tempfile
 import unittest
+from contextlib import redirect_stdout
+from io import StringIO
 from pathlib import Path
 
 from constants import DEFAULT_TARGETS, FLUXES_DEFAULT
 from db import OxideDB
 from importer import import_recipe
-from ontology import OntologyCatalog, SourceRecipe, SourceRecipeLine
+from ontology import OntologyCatalog, SourceRecipe, SourceRecipeLine, StudioRecipe, StudioRecipeLine
 from solver import solve_base_reformulation
 from state import MaterialMappings, StudioInventory
 from umf import (
     parse_batch_quantity,
+    print_studio_recipe,
     render_source_recipe_to_studio,
     scale_recipe_lines,
     solve_source_recipe_to_studio,
@@ -291,6 +294,25 @@ class RealWorldExampleTests(unittest.TestCase):
         self.assertEqual(parse_batch_quantity("100oz"), (100.0, "oz"))
         self.assertEqual(parse_batch_quantity("100 oz"), (100.0, "oz"))
         self.assertEqual(parse_batch_quantity("1.5kg"), (1.5, "kg"))
+
+    def test_print_studio_recipe_rounds_line_amounts_to_two_decimals(self) -> None:
+        studio_recipe = StudioRecipe(
+            name="Round test",
+            provider="generic",
+            source="test",
+            lines=[
+                StudioRecipeLine("Soda Ash", "Soda Ash", 16.2925, "base", "exact_studio_material"),
+                StudioRecipeLine("Red Art", "Red Art", 5.66038, "addition", "material_synonym"),
+            ],
+        )
+
+        out = StringIO()
+        with redirect_stdout(out):
+            print_studio_recipe(studio_recipe, "Rendered studio recipe from", batch_amount=None, batch_unit=None)
+
+        text = out.getvalue()
+        self.assertIn("Soda Ash: 16.29 parts", text)
+        self.assertIn("Red Art: 5.66 parts", text)
 
     def test_solve_can_force_material_substitution(self) -> None:
         source_recipe = SourceRecipe(
