@@ -327,9 +327,9 @@ class RealWorldExampleTests(unittest.TestCase):
             )
 
         lines = out.getvalue().splitlines()
-        self.assertEqual(lines[0], "oxide  moles     umf     ")
-        self.assertEqual(lines[1], "Na2O   0.240085  0.868170")
-        self.assertEqual(lines[2], "K2O    0.028259  0.102186")
+        self.assertEqual(lines[0], "oxide   moles     umf")
+        self.assertEqual(lines[1], "Na2O    0.240085  0.868170")
+        self.assertEqual(lines[2], "K2O     0.028259  0.102186")
 
     def test_solve_can_force_material_substitution(self) -> None:
         source_recipe = SourceRecipe(

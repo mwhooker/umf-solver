@@ -8,6 +8,7 @@ version = "0.1.0"
 description = "CLI tools for glaze UMF calculation and substitution solving."
 requires-python = ">=3.10"
 dependencies = [
+    "elastictabstops>=1.0.1",
     "ortools>=9.11,<10",
     "pandas>=2.2,<3",
 ]

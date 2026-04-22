@@ -17,6 +17,15 @@ wheels = [
 ]
 
 [[package]]
+name = "elastictabstops"
+version = "1.0.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/5e/fd/20e7f05fbcbd1ad68e0bc68c653265ca08eaa135768d6dccc86c7d9010fa/ElasticTabstops-1.0.1.tar.gz", hash = "sha256:22dd7cfcafeb7bdbf8cfd03aab8e71e3866006dd2372830a0e7c54d78491bc42", size = 11498, upload-time = "2022-10-06T18:01:10.293Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/3e/ab/3a8c8384a41ac9144bb207eef7b8672648ac017e99ca1dd8a92900b2c297/ElasticTabstops-1.0.1-py3-none-any.whl", hash = "sha256:34cf2c4b933e5e6a9fcb14b1453764dfc8a897b2634bae5d3c468fad253d70dc", size = 11974, upload-time = "2022-10-06T18:01:08.147Z" },
+]
+
+[[package]]
 name = "immutabledict"
 version = "4.3.1"
 source = { registry = "https://pypi.org/simple" }
@@ -348,12 +357,14 @@ name = "umf-solver"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "elastictabstops" },
     { name = "ortools" },
     { name = "pandas" },
 ]
 
 [package.metadata]
 requires-dist = [
+    { name = "elastictabstops", specifier = ">=1.0.1" },
     { name = "ortools", specifier = ">=9.11,<10" },
     { name = "pandas", specifier = ">=2.2,<3" },
 ]

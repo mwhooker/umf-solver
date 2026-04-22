@@ -6,6 +6,8 @@ import re
 from pathlib import Path
 from typing import Dict, List, Tuple
 
+from elastictabstops import Table
+
 from constants import DEFAULT_TARGETS, FLUXES_DEFAULT
 from db import OxideDB
 from ingredient_api import IngredientResolver, ResolutionResult
@@ -280,14 +282,7 @@ def safe_div(numerator: float, denominator: float) -> float:
 
 
 def print_text_table(headers: List[str], rows: List[List[str]]) -> None:
-    widths = [len(header) for header in headers]
-    for row in rows:
-        for index, cell in enumerate(row):
-            widths[index] = max(widths[index], len(cell))
-
-    print("  ".join(header.ljust(widths[index]) for index, header in enumerate(headers)))
-    for row in rows:
-        print("  ".join(cell.rjust(widths[index]) if index > 0 else cell.ljust(widths[index]) for index, cell in enumerate(row)))
+    print(Table([headers] + rows).to_spaces())
 
 
 def print_flux_ratios(rows: List[Tuple[str, float, float]]) -> None:
