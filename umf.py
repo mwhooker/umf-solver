@@ -279,25 +279,44 @@ def safe_div(numerator: float, denominator: float) -> float:
     return numerator / denominator
 
 
+def print_text_table(headers: List[str], rows: List[List[str]]) -> None:
+    widths = [len(header) for header in headers]
+    for row in rows:
+        for index, cell in enumerate(row):
+            widths[index] = max(widths[index], len(cell))
+
+    print("  ".join(header.ljust(widths[index]) for index, header in enumerate(headers)))
+    for row in rows:
+        print("  ".join(cell.rjust(widths[index]) if index > 0 else cell.ljust(widths[index]) for index, cell in enumerate(row)))
+
+
 def print_flux_ratios(rows: List[Tuple[str, float, float]]) -> None:
     umf = {oxide: value for oxide, _moles, value in rows}
     groups = seger_group_sums(umf)
     flux_total = groups["RO"] + groups["R2O"]
 
     print("\nSeger groups:")
-    print("group\tvalue")
-    print(f"RO\t{groups['RO']:.6f}")
-    print(f"R2O\t{groups['R2O']:.6f}")
-    print(f"R2O3\t{groups['R2O3']:.6f}")
-    print(f"RO2\t{groups['RO2']:.6f}")
-    print(f"Flux\t{flux_total:.6f}")
+    print_text_table(
+        ["group", "value"],
+        [
+            ["RO", f"{groups['RO']:.6f}"],
+            ["R2O", f"{groups['R2O']:.6f}"],
+            ["R2O3", f"{groups['R2O3']:.6f}"],
+            ["RO2", f"{groups['RO2']:.6f}"],
+            ["Flux", f"{flux_total:.6f}"],
+        ],
+    )
 
     print("\nFlux ratios:")
-    print("ratio\tvalue")
-    print(f"RO/R2O\t{safe_div(groups['RO'], groups['R2O']):.6f}")
-    print(f"(RO+R2O)/R2O3\t{safe_div(flux_total, groups['R2O3']):.6f}")
-    print(f"RO2/R2O3\t{safe_div(groups['RO2'], groups['R2O3']):.6f}")
-    print(f"RO2/(RO+R2O)\t{safe_div(groups['RO2'], flux_total):.6f}")
+    print_text_table(
+        ["ratio", "value"],
+        [
+            ["RO/R2O", f"{safe_div(groups['RO'], groups['R2O']):.6f}"],
+            ["(RO+R2O)/R2O3", f"{safe_div(flux_total, groups['R2O3']):.6f}"],
+            ["RO2/R2O3", f"{safe_div(groups['RO2'], groups['R2O3']):.6f}"],
+            ["RO2/(RO+R2O)", f"{safe_div(groups['RO2'], flux_total):.6f}"],
+        ],
+    )
 
 
 def print_umf_table(db: OxideDB, studio_recipe: StudioRecipe) -> None:
@@ -306,10 +325,10 @@ def print_umf_table(db: OxideDB, studio_recipe: StudioRecipe) -> None:
         return
     rows, flux_moles = umf_table_rows(db, base_recipe)
     print("\nBase UMF (additions excluded):")
-    print("oxide\tmoles\tumf")
-    for oxide, moles, umf in rows:
-        print(f"{oxide}\t{moles:.6f}\t{umf:.6f}")
-    print(f"FluxTotal\t{flux_moles:.6f}")
+    print_text_table(
+        ["oxide", "moles", "umf"],
+        [[oxide, f"{moles:.6f}", f"{umf:.6f}"] for oxide, moles, umf in rows] + [["FluxTotal", f"{flux_moles:.6f}", ""]],
+    )
     print_flux_ratios(rows)
 
 
@@ -344,10 +363,10 @@ def print_source_umf_table(
         die("Cannot compute source UMF:\n  - " + "\n  - ".join(unresolved))
     rows, flux_moles = umf_table_rows(db, materials)
     print("\nSource UMF:")
-    print("oxide\tmoles\tumf")
-    for oxide, moles, umf in rows:
-        print(f"{oxide}\t{moles:.6f}\t{umf:.6f}")
-    print(f"FluxTotal\t{flux_moles:.6f}")
+    print_text_table(
+        ["oxide", "moles", "umf"],
+        [[oxide, f"{moles:.6f}", f"{umf:.6f}"] for oxide, moles, umf in rows] + [["FluxTotal", f"{flux_moles:.6f}", ""]],
+    )
     print_flux_ratios(rows)
 
 

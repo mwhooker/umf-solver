@@ -14,6 +14,7 @@ from state import MaterialMappings, StudioInventory
 from umf import (
     parse_batch_quantity,
     print_studio_recipe,
+    print_text_table,
     render_source_recipe_to_studio,
     scale_recipe_lines,
     solve_source_recipe_to_studio,
@@ -313,6 +314,22 @@ class RealWorldExampleTests(unittest.TestCase):
         text = out.getvalue()
         self.assertIn("Soda Ash: 16.29 parts", text)
         self.assertIn("Red Art: 5.66 parts", text)
+
+    def test_print_text_table_uses_fixed_width_columns(self) -> None:
+        out = StringIO()
+        with redirect_stdout(out):
+            print_text_table(
+                ["oxide", "moles", "umf"],
+                [
+                    ["Na2O", "0.240085", "0.868170"],
+                    ["K2O", "0.028259", "0.102186"],
+                ],
+            )
+
+        lines = out.getvalue().splitlines()
+        self.assertEqual(lines[0], "oxide  moles     umf     ")
+        self.assertEqual(lines[1], "Na2O   0.240085  0.868170")
+        self.assertEqual(lines[2], "K2O    0.028259  0.102186")
 
     def test_solve_can_force_material_substitution(self) -> None:
         source_recipe = SourceRecipe(
