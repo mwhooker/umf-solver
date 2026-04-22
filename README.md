@@ -81,12 +81,14 @@ Recipe commands accept:
 
 ```bash
 uv run umf recipe render recipes/md-shino.txt
+uv run umf recipe render recipes/md-shino.txt --batch 1000 --batch-unit g
 ```
 
 `solve` uses your studio inventory as the allowed base materials and UMF-rebalances the whole base recipe:
 
 ```bash
 uv run umf recipe solve recipes/md-shino.txt
+uv run umf recipe solve recipes/md-shino.txt --batch 100 --batch-unit oz
 ```
 
 Important behavior:

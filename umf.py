@@ -25,6 +25,21 @@ SEGER_RO = ["MgO", "CaO", "SrO", "BaO", "ZnO"]
 SEGER_R2O = ["Li2O", "Na2O", "K2O"]
 SEGER_R2O3 = ["Al2O3", "B2O3", "Fe2O3"]
 SEGER_RO2 = ["SiO2", "TiO2"]
+UNIT_ALIASES = {
+    "g": "g",
+    "gram": "g",
+    "grams": "g",
+    "oz": "oz",
+    "ounce": "oz",
+    "ounces": "oz",
+    "lb": "lb",
+    "lbs": "lb",
+    "pound": "lb",
+    "pounds": "lb",
+    "kg": "kg",
+    "kilogram": "kg",
+    "kilograms": "kg",
+}
 
 
 def load_context(args) -> Tuple[OxideDB, OntologyCatalog, StudioInventory, MaterialMappings]:
@@ -191,6 +206,27 @@ def parse_substitutions(
             die(f"Substitution target does not resolve to a canonical material: {right_raw}")
         parsed[left.matched_material] = right.matched_material
     return parsed
+
+
+def normalize_unit(unit: str) -> str:
+    key = unit.strip().lower()
+    if key not in UNIT_ALIASES:
+        die(f"Unsupported batch unit: {unit}")
+    return UNIT_ALIASES[key]
+
+
+def scale_recipe_lines(
+    studio_recipe: StudioRecipe,
+    batch_amount: float | None,
+) -> List[Tuple[StudioRecipeLine, float]]:
+    if batch_amount is None:
+        return [(line, line.amount) for line in studio_recipe.lines]
+
+    total_parts = sum(line.amount for line in studio_recipe.lines)
+    if total_parts <= 0:
+        die("Cannot scale an empty recipe.")
+    scale = batch_amount / total_parts
+    return [(line, line.amount * scale) for line in studio_recipe.lines]
 
 
 def recipe_materials(studio_recipe: StudioRecipe, role: str = "base") -> Dict[str, float]:
@@ -545,13 +581,21 @@ def solve_source_recipe_to_studio(
     )
 
 
-def print_studio_recipe(studio_recipe: StudioRecipe, heading: str) -> None:
+def print_studio_recipe(
+    studio_recipe: StudioRecipe,
+    heading: str,
+    batch_amount: float | None = None,
+    batch_unit: str | None = None,
+) -> None:
     print(f"{heading}: {studio_recipe.source}")
     if studio_recipe.name:
         print(f"Name: {studio_recipe.name}")
+    if batch_amount is not None and batch_unit is not None:
+        print(f"Batch: {batch_amount:.6g} {batch_unit} total")
     print("\nStudio recipe:")
-    for line in studio_recipe.lines:
-        print(f"  [{line.role}] {line.name}: {line.amount:.6g} ({line.material}; {line.derivation_reason})")
+    for line, display_amount in scale_recipe_lines(studio_recipe, batch_amount):
+        suffix = batch_unit if batch_unit is not None else "parts"
+        print(f"  [{line.role}] {line.name}: {display_amount:.6g} {suffix} ({line.material}; {line.derivation_reason})")
 
 
 def cmd_recipe_render(args):
@@ -566,7 +610,8 @@ def cmd_recipe_render(args):
         recipe=recipe,
         substitutions=substitutions,
     )
-    print_studio_recipe(studio_recipe, "Rendered studio recipe from")
+    batch_unit = normalize_unit(args.batch_unit) if args.batch is not None else None
+    print_studio_recipe(studio_recipe, "Rendered studio recipe from", batch_amount=args.batch, batch_unit=batch_unit)
     if args.show_umf:
         print_umf_table(db, studio_recipe)
     return 0
@@ -600,7 +645,8 @@ def cmd_recipe_solve(args):
         max_materials=args.max_materials,
         substitutions=substitutions,
     )
-    print_studio_recipe(studio_recipe, "Solved studio recipe from")
+    batch_unit = normalize_unit(args.batch_unit) if args.batch is not None else None
+    print_studio_recipe(studio_recipe, "Solved studio recipe from", batch_amount=args.batch, batch_unit=batch_unit)
     if args.show_umf:
         print_umf_table(db, studio_recipe)
     return 0
@@ -668,12 +714,16 @@ def build_parser():
     sp2.add_argument("source_recipe", type=Path)
     sp2.add_argument("--show-umf", action="store_true")
     sp2.add_argument("--substitute", action="append", default=None)
+    sp2.add_argument("--batch", type=float, default=None)
+    sp2.add_argument("--batch-unit", default="g")
     sp2.set_defaults(func=cmd_recipe_render)
     sp2 = sub2.add_parser("solve")
     sp2.add_argument("source_recipe", type=Path)
     sp2.add_argument("--max-materials", type=int, default=6)
     sp2.add_argument("--show-umf", action="store_true")
     sp2.add_argument("--substitute", action="append", default=None)
+    sp2.add_argument("--batch", type=float, default=None)
+    sp2.add_argument("--batch-unit", default="g")
     sp2.set_defaults(func=cmd_recipe_solve)
 
     return p

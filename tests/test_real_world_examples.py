@@ -9,7 +9,7 @@ from importer import import_recipe
 from ontology import OntologyCatalog, SourceRecipe, SourceRecipeLine
 from solver import solve_base_reformulation
 from state import MaterialMappings, StudioInventory
-from umf import render_source_recipe_to_studio, solve_source_recipe_to_studio, source_recipe_materials
+from umf import render_source_recipe_to_studio, solve_source_recipe_to_studio, source_recipe_materials, scale_recipe_lines
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -255,6 +255,31 @@ class RealWorldExampleTests(unittest.TestCase):
         self.assertEqual(len(studio_recipe.lines), 1)
         self.assertEqual(studio_recipe.lines[0].material, "Ione Kaolin")
         self.assertEqual(studio_recipe.lines[0].derivation_reason, "forced_substitution:EPK")
+
+    def test_scale_recipe_lines_uses_total_recipe_weight(self) -> None:
+        inventory = StudioInventory()
+        inventory.add("Soda Ash", "Soda Ash")
+        inventory.add("Red Art", "Red Art")
+        studio_recipe = render_source_recipe_to_studio(
+            db=self.db,
+            catalog=self.catalog,
+            inventory=inventory,
+            mappings=MaterialMappings(),
+            recipe=SourceRecipe(
+                name="Scale test",
+                provider="generic",
+                source="test",
+                lines=[
+                    SourceRecipeLine("Soda Ash", 100.0, "base", "generic", 0),
+                    SourceRecipeLine("Red Art", 6.0, "addition", "generic", 1),
+                ],
+            ),
+        )
+
+        scaled = scale_recipe_lines(studio_recipe, 1060.0)
+        amounts = {line.material: amount for line, amount in scaled}
+        self.assertAlmostEqual(amounts["Soda Ash"], 1000.0, places=6)
+        self.assertAlmostEqual(amounts["Red Art"], 60.0, places=6)
 
     def test_solve_can_force_material_substitution(self) -> None:
         source_recipe = SourceRecipe(
