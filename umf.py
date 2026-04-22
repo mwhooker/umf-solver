@@ -54,10 +54,58 @@ def load_context(args) -> Tuple[OxideDB, OntologyCatalog, StudioInventory, Mater
 
 
 def choose_unique_studio_material(inventory: StudioInventory, material: str):
-    matches = inventory.find_by_material(material)
+    matches = [item for item in inventory.find_by_material(material) if item.sole_material() == normalize(material)]
     if len(matches) == 1:
         return matches[0]
     return None
+
+
+def parse_inventory_contributions(
+    db: OxideDB,
+    material: str | None,
+    contains: List[str] | None,
+) -> Dict[str, float]:
+    if material is not None and contains:
+        die("Use either --material or --contains, not both.")
+    if material is not None:
+        canonical = normalize(material)
+        if not db.has_material(canonical):
+            die(f"Canonical material not found in DB: {canonical}")
+        return {canonical: 1.0}
+    if not contains:
+        die("Inventory items need --material or at least one --contains MATERIAL=FRACTION entry.")
+
+    contributions: Dict[str, float] = {}
+    for raw in contains:
+        if "=" not in raw:
+            die(f"Invalid contribution '{raw}'. Use MATERIAL=FRACTION.")
+        material_name, fraction_text = raw.split("=", 1)
+        canonical = normalize(material_name)
+        if not db.has_material(canonical):
+            die(f"Canonical material not found in DB: {canonical}")
+        try:
+            fraction = float(fraction_text)
+        except ValueError:
+            die(f"Invalid fraction in contribution '{raw}'.")
+        if fraction <= 0.0:
+            die(f"Contribution fraction must be greater than zero: {raw}")
+        contributions[canonical] = contributions.get(canonical, 0.0) + fraction
+
+    if sum(contributions.values()) > 1.0 + 1e-9:
+        die("Studio material contributions cannot sum to more than 1.0.")
+    return contributions
+
+
+def describe_studio_material(item) -> str:
+    parts = [f"{material}={fraction:.6g}" for material, fraction in sorted(item.contributions.items())]
+    return ", ".join(parts)
+
+
+def studio_material_amount_for(item, material: str, target_amount: float) -> float:
+    fraction = item.contribution_for(material)
+    if fraction <= 0.0:
+        die(f"Studio material {item.name} does not supply canonical material {material}.")
+    return target_amount / fraction
 
 
 def describe_resolution(match: ResolutionResult) -> str:
@@ -84,12 +132,10 @@ def cmd_db_check(args):
 
 def cmd_inventory_add(args):
     db, _catalog, inventory, _mappings = load_context(args)
-    material = normalize(args.material)
-    if not db.has_material(material):
-        die(f"Canonical material not found in DB: {material}")
-    inventory.add(args.studio_name, material, notes=args.notes or "")
+    contributions = parse_inventory_contributions(db, args.material, args.contains)
+    inventory.add(args.studio_name, contributions=contributions, notes=args.notes or "")
     inventory.save(args.studio_inventory)
-    print(f"Added studio material: {args.studio_name} -> {material}")
+    print(f"Added studio material: {args.studio_name} -> {', '.join(f'{name}={fraction:.6g}' for name, fraction in sorted(contributions.items()))}")
     print(f"Saved: {args.studio_inventory}")
     return 0
 
@@ -115,7 +161,7 @@ def cmd_inventory_inspect(args):
     _db, _catalog, inventory, _mappings = load_context(args)
     for item in sorted(inventory.items, key=lambda item: item.name.lower()):
         print(item.name)
-        print(f"  material: {item.material}")
+        print(f"  contributions: {describe_studio_material(item)}")
         if item.notes:
             print(f"  notes: {item.notes}")
     return 0
@@ -251,7 +297,8 @@ def recipe_materials(studio_recipe: StudioRecipe, role: str = "base") -> Dict[st
     for line in studio_recipe.lines:
         if line.role != role:
             continue
-        materials[line.material] = materials.get(line.material, 0.0) + line.amount
+        for material, fraction in line.contributions.items():
+            materials[material] = materials.get(material, 0.0) + (line.amount * fraction)
     return materials
 
 
@@ -400,10 +447,14 @@ def render_source_recipe_to_studio(
 
         if line.role == "addition":
             if match.status == "exact_studio_material":
+                studio_item = inventory.find_by_name(match.matched_studio_material or line.original_name)
+                if studio_item is None:
+                    unresolved.append(f"addition '{line.original_name}' matched a missing studio material")
+                    continue
                 rendered_lines.append(
                     StudioRecipeLine(
                         name=match.matched_studio_material or line.original_name,
-                        material=match.matched_material or "",
+                        contributions=studio_item.contributions,
                         amount=line.amount,
                         role="addition",
                         derivation_reason=match.status,
@@ -420,8 +471,8 @@ def render_source_recipe_to_studio(
                 rendered_lines.append(
                     StudioRecipeLine(
                         name=studio_item.name,
-                        material=studio_item.material,
-                        amount=line.amount,
+                        contributions=studio_item.contributions,
+                        amount=studio_material_amount_for(studio_item, match.matched_material, line.amount),
                         role="addition",
                         derivation_reason=match.status,
                     )
@@ -431,10 +482,14 @@ def render_source_recipe_to_studio(
             continue
 
         if match.status == "exact_studio_material":
+            studio_item = inventory.find_by_name(match.matched_studio_material or line.original_name)
+            if studio_item is None:
+                unresolved.append(f"base '{line.original_name}' matched a missing studio material")
+                continue
             rendered_lines.append(
                 StudioRecipeLine(
                     name=match.matched_studio_material or line.original_name,
-                    material=match.matched_material or "",
+                    contributions=studio_item.contributions,
                     amount=line.amount,
                     role="base",
                     derivation_reason=match.status,
@@ -449,8 +504,8 @@ def render_source_recipe_to_studio(
                 rendered_lines.append(
                     StudioRecipeLine(
                         name=studio_item.name,
-                        material=material,
-                        amount=line.amount,
+                        contributions=studio_item.contributions,
+                        amount=studio_material_amount_for(studio_item, material, line.amount),
                         role="base",
                         derivation_reason=(
                             f"forced_substitution:{match.matched_material}"
@@ -467,8 +522,8 @@ def render_source_recipe_to_studio(
                     rendered_lines.append(
                         StudioRecipeLine(
                             name=studio_substitute.name,
-                            material=substitute_material,
-                            amount=line.amount,
+                            contributions=studio_substitute.contributions,
+                            amount=studio_material_amount_for(studio_substitute, substitute_material, line.amount),
                             role="base",
                             derivation_reason=f"direct_substitution:{material}",
                         )
@@ -517,10 +572,14 @@ def solve_source_recipe_to_studio(
 
         if line.role == "addition":
             if match.status == "exact_studio_material":
+                studio_item = inventory.find_by_name(match.matched_studio_material or line.original_name)
+                if studio_item is None:
+                    unresolved.append(f"addition '{line.original_name}' matched a missing studio material")
+                    continue
                 addition_lines.append(
                     StudioRecipeLine(
                         name=match.matched_studio_material or line.original_name,
-                        material=match.matched_material or "",
+                        contributions=studio_item.contributions,
                         amount=line.amount,
                         role="addition",
                         derivation_reason=match.status,
@@ -537,8 +596,8 @@ def solve_source_recipe_to_studio(
                 addition_lines.append(
                     StudioRecipeLine(
                         name=studio_item.name,
-                        material=studio_item.material,
-                        amount=line.amount,
+                        contributions=studio_item.contributions,
+                        amount=studio_material_amount_for(studio_item, match.matched_material, line.amount),
                         role="addition",
                         derivation_reason=match.status,
                     )
@@ -548,9 +607,13 @@ def solve_source_recipe_to_studio(
             continue
 
         if match.status == "exact_studio_material":
-            material = match.matched_material or ""
-            target_base_materials[material] = target_base_materials.get(material, 0.0) + line.amount
-            if material in substitutions:
+            studio_item = inventory.find_by_name(match.matched_studio_material or line.original_name)
+            if studio_item is None:
+                unresolved.append(f"base '{line.original_name}' matched a missing studio material")
+                continue
+            for material, fraction in studio_item.contributions.items():
+                target_base_materials[material] = target_base_materials.get(material, 0.0) + (line.amount * fraction)
+            if any(material in substitutions for material in studio_item.contributions):
                 continue
             continue
 
@@ -567,13 +630,18 @@ def solve_source_recipe_to_studio(
     if unresolved:
         die("Cannot resolve source recipe:\n  - " + "\n  - ".join(unresolved))
 
-    addition_materials = {line.material for line in addition_lines}
+    addition_materials = {
+        material
+        for line in addition_lines
+        for material in line.contributions
+    }
     available_materials = sorted(
         {
-            item.material
+            item.sole_material()
             for item in inventory.items
-            if (item.material not in addition_materials or item.material in fixed_base_materials)
-            and item.material not in banned_base_materials
+            if item.sole_material() is not None
+            and (item.sole_material() not in addition_materials or item.sole_material() in fixed_base_materials)
+            and item.sole_material() not in banned_base_materials
         }
     )
 
@@ -595,8 +663,8 @@ def solve_source_recipe_to_studio(
         base_lines.append(
             StudioRecipeLine(
                 name=studio_item.name,
-                material=material,
-                amount=amount,
+                contributions=studio_item.contributions,
+                amount=studio_material_amount_for(studio_item, material, amount),
                 role="base",
                 derivation_reason=fixed_base_reasons.get(material, "umf_reformulation"),
             )
@@ -624,7 +692,8 @@ def print_studio_recipe(
     print("\nStudio recipe:")
     for line, display_amount in scale_recipe_lines(studio_recipe, batch_amount):
         suffix = batch_unit if batch_unit is not None else "parts"
-        print(f"  [{line.role}] {line.name}: {display_amount:.2f} {suffix} ({line.material}; {line.derivation_reason})")
+        material_desc = ", ".join(f"{material}={fraction:.6g}" for material, fraction in sorted(line.contributions.items()))
+        print(f"  [{line.role}] {line.name}: {display_amount:.2f} {suffix} ({material_desc}; {line.derivation_reason})")
 
 
 def cmd_recipe_render(args):
@@ -698,7 +767,8 @@ def build_parser():
     sub2 = sp.add_subparsers(dest="inventory_cmd", required=True)
     sp2 = sub2.add_parser("add")
     sp2.add_argument("studio_name")
-    sp2.add_argument("--material", required=True)
+    sp2.add_argument("--material")
+    sp2.add_argument("--contains", action="append", default=None)
     sp2.add_argument("--notes", default="")
     sp2.set_defaults(func=cmd_inventory_add)
     sp2 = sub2.add_parser("remove")

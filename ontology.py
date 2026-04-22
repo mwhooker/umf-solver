@@ -21,8 +21,21 @@ class Material:
 @dataclass
 class StudioMaterial:
     name: str
-    material: str
+    # Fractions below 1.0 leave an unmodeled remainder (for example water in a solution).
+    # We intentionally ignore that remainder for now and only track active chemistry-bearing inputs.
+    contributions: Dict[str, float]
     notes: str = ""
+
+    def sole_material(self) -> Optional[str]:
+        if len(self.contributions) != 1:
+            return None
+        return next(iter(self.contributions))
+
+    def contribution_for(self, material: str) -> float:
+        return self.contributions.get(normalize(material), 0.0)
+
+    def supplies_material(self, material: str) -> bool:
+        return self.contribution_for(material) > 0.0
 
 
 @dataclass
@@ -64,10 +77,14 @@ class SourceRecipe:
 @dataclass
 class StudioRecipeLine:
     name: str
-    material: str
+    contributions: Dict[str, float]
     amount: float
     role: str
     derivation_reason: str
+
+    @property
+    def material(self) -> str:
+        return next(iter(self.contributions)) if len(self.contributions) == 1 else ""
 
 
 @dataclass

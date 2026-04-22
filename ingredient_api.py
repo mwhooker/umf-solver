@@ -58,11 +58,12 @@ class IngredientResolver:
 
         studio_item = self.inventory.find_by_name(query)
         if studio_item is not None:
+            sole_material = studio_item.sole_material()
             return ResolutionResult(
                 query=query,
                 provider=provider,
-                matched_concept=self.catalog.concept_for_material(studio_item.material),
-                matched_material=studio_item.material,
+                matched_concept=self.catalog.concept_for_material(sole_material) if sole_material is not None else None,
+                matched_material=sole_material,
                 matched_studio_material=studio_item.name,
                 status="exact_studio_material",
                 reason="matched studio inventory label",

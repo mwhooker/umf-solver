@@ -89,7 +89,7 @@ class IngredientResolverTests(unittest.TestCase):
 
         text = out.getvalue()
         self.assertIn("Silica 325M", text)
-        self.assertIn("material: Flint", text)
+        self.assertIn("contributions: Flint=1", text)
         self.assertIn("notes: fine mesh", text)
 
     def test_cli_mapping_set_persists_mapping(self) -> None:

@@ -26,6 +26,7 @@ Studio inventory entries map your local labels to canonical materials from `data
 ```bash
 uv run umf inventory add "Silica 325M" --material Flint
 uv run umf inventory add "Mahavir Feldspar" --material Mahavir
+uv run umf inventory add "Soda Ash Solution 18%" --contains "Soda Ash=0.18"
 uv run umf inventory inspect
 ```
 

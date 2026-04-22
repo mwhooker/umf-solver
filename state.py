@@ -25,12 +25,31 @@ class StudioInventory:
         data = {"items": [item.__dict__ for item in self.items]}
         path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
 
-    def add(self, studio_name: str, material: str, notes: str = "") -> None:
+    def add(
+        self,
+        studio_name: str,
+        material: str | None = None,
+        contributions: Dict[str, float] | None = None,
+        notes: str = "",
+    ) -> None:
         studio_name = normalize(studio_name)
         for item in self.items:
             if norm_key(item.name) == norm_key(studio_name):
                 raise ValueError(f"Studio material already exists: {studio_name}")
-        self.items.append(StudioMaterial(name=studio_name, material=normalize(material), notes=notes))
+        if material is not None:
+            if contributions is not None:
+                raise ValueError("Provide either material or contributions, not both.")
+            contributions = {normalize(material): 1.0}
+        if not contributions:
+            raise ValueError("Studio material must define at least one material contribution.")
+        normalized_contributions = {
+            normalize(name): float(fraction)
+            for name, fraction in contributions.items()
+            if float(fraction) > 0.0
+        }
+        if not normalized_contributions:
+            raise ValueError("Studio material must define at least one positive material contribution.")
+        self.items.append(StudioMaterial(name=studio_name, contributions=normalized_contributions, notes=notes))
 
     def remove(self, studio_name: str) -> bool:
         target = norm_key(studio_name)
@@ -47,7 +66,7 @@ class StudioInventory:
 
     def find_by_material(self, material: str) -> List[StudioMaterial]:
         material = normalize(material)
-        return [item for item in self.items if item.material == material]
+        return [item for item in self.items if item.supplies_material(material)]
 
 
 @dataclass

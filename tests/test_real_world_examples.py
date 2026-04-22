@@ -15,6 +15,7 @@ from umf import (
     parse_batch_quantity,
     print_studio_recipe,
     print_text_table,
+    recipe_materials,
     render_source_recipe_to_studio,
     scale_recipe_lines,
     solve_source_recipe_to_studio,
@@ -302,8 +303,8 @@ class RealWorldExampleTests(unittest.TestCase):
             provider="generic",
             source="test",
             lines=[
-                StudioRecipeLine("Soda Ash", "Soda Ash", 16.2925, "base", "exact_studio_material"),
-                StudioRecipeLine("Red Art", "Red Art", 5.66038, "addition", "material_synonym"),
+                StudioRecipeLine("Soda Ash", {"Soda Ash": 1.0}, 16.2925, "base", "exact_studio_material"),
+                StudioRecipeLine("Red Art", {"Red Art": 1.0}, 5.66038, "addition", "material_synonym"),
             ],
         )
 
@@ -330,6 +331,53 @@ class RealWorldExampleTests(unittest.TestCase):
         self.assertEqual(lines[0], "oxide   moles     umf")
         self.assertEqual(lines[1], "Na2O    0.240085  0.868170")
         self.assertEqual(lines[2], "K2O     0.028259  0.102186")
+
+    def test_render_converts_dry_requirement_to_solution_stock_amount(self) -> None:
+        source_recipe = SourceRecipe(
+            name="Soda ash solution",
+            provider="generic",
+            source="test",
+            lines=[SourceRecipeLine("Soda Ash", 18.0, "base", "generic", 0)],
+        )
+        inventory = StudioInventory()
+        inventory.add("Soda Ash Solution 18%", contributions={"Soda Ash": 0.18})
+
+        studio_recipe = render_source_recipe_to_studio(
+            db=self.db,
+            catalog=self.catalog,
+            inventory=inventory,
+            mappings=MaterialMappings(),
+            recipe=source_recipe,
+        )
+
+        self.assertEqual(len(studio_recipe.lines), 1)
+        self.assertEqual(studio_recipe.lines[0].name, "Soda Ash Solution 18%")
+        self.assertAlmostEqual(studio_recipe.lines[0].amount, 100.0, places=6)
+        self.assertAlmostEqual(recipe_materials(studio_recipe)["Soda Ash"], 18.0, places=6)
+
+    def test_solve_can_batch_with_single_material_solution_stock(self) -> None:
+        source_recipe = SourceRecipe(
+            name="Soda ash solution solve",
+            provider="generic",
+            source="test",
+            lines=[SourceRecipeLine("Soda Ash", 18.0, "base", "generic", 0)],
+        )
+        inventory = StudioInventory()
+        inventory.add("Soda Ash Solution 18%", contributions={"Soda Ash": 0.18})
+
+        studio_recipe = solve_source_recipe_to_studio(
+            db=self.db,
+            catalog=self.catalog,
+            inventory=inventory,
+            mappings=MaterialMappings(),
+            recipe=source_recipe,
+            max_materials=2,
+        )
+
+        self.assertEqual(len(studio_recipe.lines), 1)
+        self.assertEqual(studio_recipe.lines[0].name, "Soda Ash Solution 18%")
+        self.assertAlmostEqual(studio_recipe.lines[0].amount, 100.0, places=6)
+        self.assertAlmostEqual(recipe_materials(studio_recipe)["Soda Ash"], 18.0, places=6)
 
     def test_solve_can_force_material_substitution(self) -> None:
         source_recipe = SourceRecipe(
