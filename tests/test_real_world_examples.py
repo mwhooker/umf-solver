@@ -13,6 +13,7 @@ from solver import solve_base_reformulation
 from state import MaterialMappings, StudioInventory
 from umf import (
     parse_batch_quantity,
+    parse_scale_target,
     print_studio_recipe,
     print_text_table,
     recipe_materials,
@@ -298,6 +299,9 @@ class RealWorldExampleTests(unittest.TestCase):
         self.assertEqual(parse_batch_quantity("100 oz"), (100.0, "oz"))
         self.assertEqual(parse_batch_quantity("1.5kg"), (1.5, "kg"))
 
+    def test_parse_scale_target_accepts_name_equals_quantity(self) -> None:
+        self.assertEqual(parse_scale_target("Soda Ash Solution 15%=100g"), ("Soda Ash Solution 15%", 100.0, "g"))
+
     def test_print_studio_recipe_rounds_line_amounts_to_two_decimals(self) -> None:
         studio_recipe = StudioRecipe(
             name="Round test",
@@ -414,6 +418,49 @@ class RealWorldExampleTests(unittest.TestCase):
         self.assertEqual(studio_recipe.lines[0].name, "Soda Ash Solution 18%")
         self.assertAlmostEqual(studio_recipe.lines[0].amount, 100.0, places=6)
         self.assertAlmostEqual(recipe_materials(studio_recipe)["Soda Ash"], 18.0, places=6)
+
+    def test_scale_recipe_lines_can_anchor_on_solution_stock_amount(self) -> None:
+        source_recipe = SourceRecipe(
+            name="Soda ash solution solve",
+            provider="generic",
+            source="test",
+            lines=[SourceRecipeLine("Soda Ash", 18.0, "base", "generic", 0)],
+        )
+        inventory = StudioInventory()
+        inventory.add("Soda Ash Solution 15%", contributions={"Soda Ash": 0.15})
+
+        studio_recipe = solve_source_recipe_to_studio(
+            db=self.db,
+            catalog=self.catalog,
+            inventory=inventory,
+            mappings=MaterialMappings(),
+            recipe=source_recipe,
+            max_materials=2,
+        )
+
+        scaled = scale_recipe_lines(
+            studio_recipe,
+            batch_amount=None,
+            scale_target_name="Soda Ash Solution 15%",
+            scale_target_amount=100.0,
+        )
+        self.assertEqual(len(scaled), 1)
+        self.assertAlmostEqual(scaled[0][1], 100.0, places=6)
+        scaled_recipe = StudioRecipe(
+            name=studio_recipe.name,
+            provider=studio_recipe.provider,
+            source=studio_recipe.source,
+            lines=[
+                StudioRecipeLine(
+                    scaled[0][0].name,
+                    scaled[0][0].contributions,
+                    scaled[0][1],
+                    scaled[0][0].role,
+                    scaled[0][0].derivation_reason,
+                )
+            ],
+        )
+        self.assertAlmostEqual(recipe_materials(scaled_recipe)["Soda Ash"], 15.0, places=6)
 
     def test_solve_can_force_material_substitution(self) -> None:
         source_recipe = SourceRecipe(

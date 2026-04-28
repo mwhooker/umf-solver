@@ -83,6 +83,7 @@ Recipe commands accept:
 ```bash
 uv run umf recipe render recipes/md-shino.txt
 uv run umf recipe render recipes/md-shino.txt --batch 1000g
+uv run umf recipe render recipes/md-shino.txt --scale-on "Soda Ash Solution 15%=100g"
 ```
 
 `solve` uses your studio inventory as the allowed base materials and UMF-rebalances the whole base recipe:
@@ -90,6 +91,7 @@ uv run umf recipe render recipes/md-shino.txt --batch 1000g
 ```bash
 uv run umf recipe solve recipes/md-shino.txt
 uv run umf recipe solve recipes/md-shino.txt --batch 100oz
+uv run umf recipe solve recipes/md-shino.txt --scale-on "Soda Ash Solution 15%=100g"
 ```
 
 Important behavior:

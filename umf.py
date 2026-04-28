@@ -293,10 +293,40 @@ def parse_batch_quantity(raw: str | None) -> Tuple[float | None, str | None]:
     return amount, unit
 
 
+def parse_scale_target(raw: str | None) -> Tuple[str | None, float | None, str | None]:
+    if raw is None:
+        return None, None, None
+    if "=" not in raw:
+        die(f"Invalid scale target '{raw}'. Use NAME=100g.")
+    name, quantity = raw.rsplit("=", 1)
+    target_name = normalize(name)
+    if not target_name:
+        die(f"Invalid scale target '{raw}'. Ingredient name cannot be empty.")
+    amount, unit = parse_batch_quantity(quantity)
+    return target_name, amount, unit
+
+
 def scale_recipe_lines(
     studio_recipe: StudioRecipe,
     batch_amount: float | None,
+    scale_target_name: str | None = None,
+    scale_target_amount: float | None = None,
 ) -> List[Tuple[StudioRecipeLine, float]]:
+    if batch_amount is not None and scale_target_name is not None:
+        die("Use either --batch or --scale-on, not both.")
+
+    if scale_target_name is not None:
+        target_matches = [line for line in studio_recipe.lines if normalize(line.name) == normalize(scale_target_name)]
+        if not target_matches:
+            die(f"Scale target not found in studio recipe: {scale_target_name}")
+        if len(target_matches) > 1:
+            die(f"Scale target is ambiguous in studio recipe: {scale_target_name}")
+        current_amount = target_matches[0].amount
+        if current_amount <= 0.0:
+            die(f"Scale target has non-positive amount: {scale_target_name}")
+        scale = (scale_target_amount or 0.0) / current_amount
+        return [(line, line.amount * scale) for line in studio_recipe.lines]
+
     if batch_amount is None:
         return [(line, line.amount) for line in studio_recipe.lines]
 
@@ -714,16 +744,26 @@ def print_studio_recipe(
     heading: str,
     batch_amount: float | None = None,
     batch_unit: str | None = None,
+    scale_target_name: str | None = None,
+    scale_target_amount: float | None = None,
+    scale_target_unit: str | None = None,
 ) -> None:
     print(f"{heading}: {studio_recipe.source}")
     if studio_recipe.name:
         print(f"Name: {studio_recipe.name}")
     if batch_amount is not None and batch_unit is not None:
         print(f"Batch: {batch_amount:.6g} {batch_unit} total")
+    if scale_target_name is not None and scale_target_amount is not None and scale_target_unit is not None:
+        print(f"Scaled on: {scale_target_name}={scale_target_amount:.6g} {scale_target_unit}")
     print("\nStudio recipe:")
-    scaled_lines = scale_recipe_lines(studio_recipe, batch_amount)
+    scaled_lines = scale_recipe_lines(
+        studio_recipe,
+        batch_amount,
+        scale_target_name=scale_target_name,
+        scale_target_amount=scale_target_amount,
+    )
     role_order = {"base": 0, "addition": 1}
-    suffix = batch_unit if batch_unit is not None else "parts"
+    suffix = batch_unit or scale_target_unit or "parts"
     rows = []
     for line, display_amount in sorted(
         scaled_lines,
@@ -747,7 +787,16 @@ def cmd_recipe_render(args):
         substitutions=substitutions,
     )
     batch_amount, batch_unit = parse_batch_quantity(args.batch)
-    print_studio_recipe(studio_recipe, "Rendered studio recipe from", batch_amount=batch_amount, batch_unit=batch_unit)
+    scale_target_name, scale_target_amount, scale_target_unit = parse_scale_target(args.scale_on)
+    print_studio_recipe(
+        studio_recipe,
+        "Rendered studio recipe from",
+        batch_amount=batch_amount,
+        batch_unit=batch_unit,
+        scale_target_name=scale_target_name,
+        scale_target_amount=scale_target_amount,
+        scale_target_unit=scale_target_unit,
+    )
     if args.show_umf:
         print_umf_table(db, studio_recipe)
     return 0
@@ -782,7 +831,16 @@ def cmd_recipe_solve(args):
         substitutions=substitutions,
     )
     batch_amount, batch_unit = parse_batch_quantity(args.batch)
-    print_studio_recipe(studio_recipe, "Solved studio recipe from", batch_amount=batch_amount, batch_unit=batch_unit)
+    scale_target_name, scale_target_amount, scale_target_unit = parse_scale_target(args.scale_on)
+    print_studio_recipe(
+        studio_recipe,
+        "Solved studio recipe from",
+        batch_amount=batch_amount,
+        batch_unit=batch_unit,
+        scale_target_name=scale_target_name,
+        scale_target_amount=scale_target_amount,
+        scale_target_unit=scale_target_unit,
+    )
     if args.show_umf:
         print_umf_table(db, studio_recipe)
     return 0
@@ -852,6 +910,7 @@ def build_parser():
     sp2.add_argument("--show-umf", action="store_true")
     sp2.add_argument("--substitute", action="append", default=None)
     sp2.add_argument("--batch", default=None)
+    sp2.add_argument("--scale-on", default=None)
     sp2.set_defaults(func=cmd_recipe_render)
     sp2 = sub2.add_parser("solve")
     sp2.add_argument("source_recipe", type=Path)
@@ -859,6 +918,7 @@ def build_parser():
     sp2.add_argument("--show-umf", action="store_true")
     sp2.add_argument("--substitute", action="append", default=None)
     sp2.add_argument("--batch", default=None)
+    sp2.add_argument("--scale-on", default=None)
     sp2.set_defaults(func=cmd_recipe_solve)
 
     return p
