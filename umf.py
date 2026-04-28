@@ -60,6 +60,21 @@ def choose_unique_studio_material(inventory: StudioInventory, material: str):
     return None
 
 
+def choose_unique_direct_substitute_material(
+    catalog: OntologyCatalog,
+    inventory: StudioInventory,
+    material: str,
+) -> str | None:
+    stocked = []
+    for substitute_material in catalog.direct_substitutes_for(material):
+        studio_item = choose_unique_studio_material(inventory, substitute_material)
+        if studio_item is not None:
+            stocked.append(substitute_material)
+    if len(stocked) == 1:
+        return stocked[0]
+    return None
+
+
 def parse_inventory_contributions(
     db: OxideDB,
     material: str | None,
@@ -627,6 +642,10 @@ def solve_source_recipe_to_studio(
             material = match.matched_material
             target_base_materials[material] = target_base_materials.get(material, 0.0) + line.amount
             baseline_material = substitutions.get(material, material)
+            if baseline_material == material and choose_unique_studio_material(inventory, material) is None:
+                direct_substitute = choose_unique_direct_substitute_material(catalog, inventory, material)
+                if direct_substitute is not None:
+                    baseline_material = direct_substitute
             baseline_base_materials[baseline_material] = baseline_base_materials.get(baseline_material, 0.0) + line.amount
             if baseline_material != material:
                 required_base_materials.add(baseline_material)

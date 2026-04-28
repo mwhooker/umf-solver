@@ -239,6 +239,7 @@ class RealWorldExampleTests(unittest.TestCase):
         )
 
         base_amounts = {line.material: line.amount for line in studio_recipe.lines if line.role == "base"}
+        self.assertIn("Minspar", base_amounts)
         self.assertNotAlmostEqual(base_amounts["Soda Ash"], 17.27, places=2)
         self.assertNotAlmostEqual(base_amounts["Minspar"], 9.82, places=2)
         self.assertAlmostEqual(sum(base_amounts.values()), 100.0, places=6)
