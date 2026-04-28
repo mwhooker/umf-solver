@@ -20,6 +20,8 @@ def solve_base_reformulation(
     max_materials: int,
     targets: List[str],
     fluxes: List[str],
+    baseline_base_materials: Dict[str, float] | None = None,
+    required_materials: Sequence[str] | None = None,
 ) -> Dict[str, float]:
     if pywraplp is None:
         die("ortools is required. Install with: python3 -m pip install ortools")
@@ -54,10 +56,16 @@ def solve_base_reformulation(
 
     for m in mats:
         solver.Add(x[m] <= variable_mass_target * y[m])
+        solver.Add(x[m] >= 1e-9 * y[m])
     solver.Add(sum(y[m] for m in mats) <= int(max_materials))
     solver.Add(sum(x[m] for m in mats) == variable_mass_target)
 
-    baseline_db = {m: target_base_materials.get(m, 0.0) for m in mats}
+    required = {material for material in (required_materials or []) if material in mats}
+    for material in required:
+        solver.Add(y[material] == 1)
+
+    baseline_source = baseline_base_materials if baseline_base_materials is not None else target_base_materials
+    baseline_db = {m: baseline_source.get(m, 0.0) for m in mats}
     core_set = {m for m, v in baseline_db.items() if abs(v) > 1e-9}
 
     coeffs = {m: db.coeffs_moles_per_gram(m) for m in mats}

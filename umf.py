@@ -561,11 +561,13 @@ def solve_source_recipe_to_studio(
     substitutions = substitutions or {}
 
     target_base_materials: Dict[str, float] = {}
+    baseline_base_materials: Dict[str, float] = {}
     fixed_base_materials: Dict[str, float] = {}
     fixed_base_reasons: Dict[str, str] = {}
     addition_lines: List[StudioRecipeLine] = []
     unresolved: List[str] = []
     banned_base_materials = set(substitutions.keys())
+    required_base_materials: set[str] = set()
 
     for line in recipe.lines:
         match = resolver.resolve(line.original_name, provider=recipe.provider)
@@ -613,6 +615,10 @@ def solve_source_recipe_to_studio(
                 continue
             for material, fraction in studio_item.contributions.items():
                 target_base_materials[material] = target_base_materials.get(material, 0.0) + (line.amount * fraction)
+                baseline_material = substitutions.get(material, material)
+                baseline_base_materials[baseline_material] = baseline_base_materials.get(baseline_material, 0.0) + (line.amount * fraction)
+                if baseline_material != material:
+                    required_base_materials.add(baseline_material)
             if any(material in substitutions for material in studio_item.contributions):
                 continue
             continue
@@ -620,6 +626,10 @@ def solve_source_recipe_to_studio(
         if match.status in {"exact_material", "material_synonym", "mapped_material", "concept_material"} and match.matched_material is not None:
             material = match.matched_material
             target_base_materials[material] = target_base_materials.get(material, 0.0) + line.amount
+            baseline_material = substitutions.get(material, material)
+            baseline_base_materials[baseline_material] = baseline_base_materials.get(baseline_material, 0.0) + line.amount
+            if baseline_material != material:
+                required_base_materials.add(baseline_material)
             studio_item = choose_unique_studio_material(inventory, material)
             if studio_item is not None and material not in banned_base_materials:
                 fixed_base_reasons[material] = fixed_base_reasons.get(material, match.status)
@@ -653,6 +663,8 @@ def solve_source_recipe_to_studio(
         max_materials=max_materials,
         targets=DEFAULT_TARGETS,
         fluxes=FLUXES_DEFAULT,
+        baseline_base_materials=baseline_base_materials,
+        required_materials=sorted(required_base_materials),
     )
 
     base_lines: List[StudioRecipeLine] = []

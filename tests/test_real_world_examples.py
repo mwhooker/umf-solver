@@ -414,6 +414,40 @@ class RealWorldExampleTests(unittest.TestCase):
         self.assertIn("Ione Kaolin", base_amounts)
         self.assertNotIn("EPK", base_amounts)
 
+    def test_solve_forced_substitution_appears_even_when_other_materials_are_stocked(self) -> None:
+        source_recipe = SourceRecipe(
+            name="Forced kona replacement",
+            provider="generic",
+            source="test",
+            lines=[
+                SourceRecipeLine("Soda Ash", 17.27, "base", "generic", 0),
+                SourceRecipeLine("Kona F-4 Feldspar", 9.82, "base", "generic", 1),
+                SourceRecipeLine("Nepheline Syenite", 40.91, "base", "generic", 2),
+                SourceRecipeLine("Edgar Plastic Kaolin", 18.18, "base", "generic", 3),
+                SourceRecipeLine("OM4", 13.82, "base", "generic", 4),
+            ],
+        )
+        inventory = StudioInventory()
+        inventory.add("Soda Ash", "Soda Ash")
+        inventory.add("Minspar", "Minspar")
+        inventory.add("Nepheline Syenite", "Neph Sy")
+        inventory.add("EPK", "EPK")
+        inventory.add("Ione", "Ione Kaolin")
+        inventory.add("OM4", "OM4")
+
+        studio_recipe = solve_source_recipe_to_studio(
+            db=self.db,
+            catalog=self.catalog,
+            inventory=inventory,
+            mappings=MaterialMappings(),
+            recipe=source_recipe,
+            max_materials=6,
+            substitutions={"Kona F-4 Feldspar": "Ione Kaolin"},
+        )
+
+        base_amounts = {line.material: line.amount for line in studio_recipe.lines if line.role == "base"}
+        self.assertIn("Ione Kaolin", base_amounts)
+
     def test_source_recipe_materials_can_compute_imported_recipe_umf_inputs(self) -> None:
         recipe = SourceRecipe.load(ROOT / "recipes" / "md-shino.json")
         materials, unresolved = source_recipe_materials(
