@@ -317,6 +317,27 @@ class RealWorldExampleTests(unittest.TestCase):
         self.assertIn("Soda Ash: 16.29 parts", text)
         self.assertIn("Red Art: 5.66 parts", text)
 
+    def test_print_studio_recipe_sorts_lines_by_name(self) -> None:
+        studio_recipe = StudioRecipe(
+            name="Sort test",
+            provider="generic",
+            source="test",
+            lines=[
+                StudioRecipeLine("Zulu", {"Zulu": 1.0}, 1.0, "base", "test"),
+                StudioRecipeLine("Alpha", {"Alpha": 1.0}, 1.0, "base", "test"),
+                StudioRecipeLine("Beta", {"Beta": 1.0}, 1.0, "addition", "test"),
+            ],
+        )
+
+        out = StringIO()
+        with redirect_stdout(out):
+            print_studio_recipe(studio_recipe, "Rendered studio recipe from")
+
+        lines = [line for line in out.getvalue().splitlines() if line.startswith("  [")]
+        self.assertEqual(lines[0], "  [addition] Beta: 1.00 parts (Beta=1; test)")
+        self.assertEqual(lines[1], "  [base] Alpha: 1.00 parts (Alpha=1; test)")
+        self.assertEqual(lines[2], "  [base] Zulu: 1.00 parts (Zulu=1; test)")
+
     def test_print_text_table_uses_fixed_width_columns(self) -> None:
         out = StringIO()
         with redirect_stdout(out):

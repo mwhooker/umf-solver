@@ -721,7 +721,8 @@ def print_studio_recipe(
     if batch_amount is not None and batch_unit is not None:
         print(f"Batch: {batch_amount:.6g} {batch_unit} total")
     print("\nStudio recipe:")
-    for line, display_amount in scale_recipe_lines(studio_recipe, batch_amount):
+    scaled_lines = scale_recipe_lines(studio_recipe, batch_amount)
+    for line, display_amount in sorted(scaled_lines, key=lambda pair: (pair[0].role, pair[0].name.lower(), pair[0].name)):
         suffix = batch_unit if batch_unit is not None else "parts"
         material_desc = ", ".join(f"{material}={fraction:.6g}" for material, fraction in sorted(line.contributions.items()))
         print(f"  [{line.role}] {line.name}: {display_amount:.2f} {suffix} ({material_desc}; {line.derivation_reason})")
