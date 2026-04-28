@@ -313,9 +313,20 @@ class RealWorldExampleTests(unittest.TestCase):
         with redirect_stdout(out):
             print_studio_recipe(studio_recipe, "Rendered studio recipe from", batch_amount=None, batch_unit=None)
 
-        text = out.getvalue()
-        self.assertIn("Soda Ash: 16.29 parts", text)
-        self.assertIn("Red Art: 5.66 parts", text)
+        lines = out.getvalue().splitlines()
+        self.assertTrue(lines[4].startswith("role"))
+        self.assertIn("name", lines[4])
+        self.assertIn("amount", lines[4])
+        self.assertIn("contributions", lines[4])
+        self.assertIn("reason", lines[4])
+        self.assertIn("Soda Ash", lines[6])
+        self.assertIn("16.29", lines[6])
+        self.assertIn("parts", lines[6])
+        self.assertIn("Soda Ash=1", lines[6])
+        self.assertIn("exact_studio_material", lines[6])
+        self.assertIn("Red Art", lines[5])
+        self.assertIn("5.66", lines[5])
+        self.assertIn("material_synonym", lines[5])
 
     def test_print_studio_recipe_sorts_lines_by_name(self) -> None:
         studio_recipe = StudioRecipe(
@@ -333,10 +344,13 @@ class RealWorldExampleTests(unittest.TestCase):
         with redirect_stdout(out):
             print_studio_recipe(studio_recipe, "Rendered studio recipe from")
 
-        lines = [line for line in out.getvalue().splitlines() if line.startswith("  [")]
-        self.assertEqual(lines[0], "  [addition] Beta: 1.00 parts (Beta=1; test)")
-        self.assertEqual(lines[1], "  [base] Alpha: 1.00 parts (Alpha=1; test)")
-        self.assertEqual(lines[2], "  [base] Zulu: 1.00 parts (Zulu=1; test)")
+        lines = [
+            line for line in out.getvalue().splitlines()
+            if line.startswith("addition") or line.startswith("base")
+        ]
+        self.assertIn("Beta", lines[0])
+        self.assertIn("Alpha", lines[1])
+        self.assertIn("Zulu", lines[2])
 
     def test_print_text_table_uses_fixed_width_columns(self) -> None:
         out = StringIO()
