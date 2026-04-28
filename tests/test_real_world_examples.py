@@ -319,14 +319,14 @@ class RealWorldExampleTests(unittest.TestCase):
         self.assertIn("amount", lines[4])
         self.assertIn("contributions", lines[4])
         self.assertIn("reason", lines[4])
-        self.assertIn("Soda Ash", lines[6])
-        self.assertIn("16.29", lines[6])
-        self.assertIn("parts", lines[6])
-        self.assertIn("Soda Ash=1", lines[6])
-        self.assertIn("exact_studio_material", lines[6])
-        self.assertIn("Red Art", lines[5])
-        self.assertIn("5.66", lines[5])
-        self.assertIn("material_synonym", lines[5])
+        self.assertIn("Soda Ash", lines[5])
+        self.assertIn("16.29", lines[5])
+        self.assertIn("parts", lines[5])
+        self.assertIn("Soda Ash=1", lines[5])
+        self.assertIn("exact_studio_material", lines[5])
+        self.assertIn("Red Art", lines[6])
+        self.assertIn("5.66", lines[6])
+        self.assertIn("material_synonym", lines[6])
 
     def test_print_studio_recipe_sorts_lines_by_name(self) -> None:
         studio_recipe = StudioRecipe(
@@ -348,9 +348,9 @@ class RealWorldExampleTests(unittest.TestCase):
             line for line in out.getvalue().splitlines()
             if line.startswith("addition") or line.startswith("base")
         ]
-        self.assertIn("Beta", lines[0])
-        self.assertIn("Alpha", lines[1])
-        self.assertIn("Zulu", lines[2])
+        self.assertIn("Alpha", lines[0])
+        self.assertIn("Zulu", lines[1])
+        self.assertIn("Beta", lines[2])
 
     def test_print_text_table_uses_fixed_width_columns(self) -> None:
         out = StringIO()

@@ -722,9 +722,13 @@ def print_studio_recipe(
         print(f"Batch: {batch_amount:.6g} {batch_unit} total")
     print("\nStudio recipe:")
     scaled_lines = scale_recipe_lines(studio_recipe, batch_amount)
+    role_order = {"base": 0, "addition": 1}
     suffix = batch_unit if batch_unit is not None else "parts"
     rows = []
-    for line, display_amount in sorted(scaled_lines, key=lambda pair: (pair[0].role, pair[0].name.lower(), pair[0].name)):
+    for line, display_amount in sorted(
+        scaled_lines,
+        key=lambda pair: (role_order.get(pair[0].role, 99), pair[0].name.lower(), pair[0].name),
+    ):
         material_desc = ", ".join(f"{material}={fraction:.6g}" for material, fraction in sorted(line.contributions.items()))
         rows.append([line.role, line.name, f"{display_amount:.2f}", suffix, material_desc, line.derivation_reason])
     print_text_table(["role", "name", "amount", "unit", "contributions", "reason"], rows)
